@@ -1,7 +1,7 @@
 import { observer } from "mobx-react";
+import { SmileyIcon } from "outline-icons";
 import * as React from "react";
 import styled from "styled-components";
-import breakpoint from "styled-components-breakpoint";
 import { light } from "@shared/styles/theme";
 import {
   getCurrentDateAsString,
@@ -11,8 +11,12 @@ import {
 import { DocumentValidation } from "@shared/validations";
 import Document from "~/models/Document";
 import ContentEditable, { RefHandle } from "~/components/ContentEditable";
+import Emoji from "~/components/Emoji";
+import EmojiPicker from "~/components/EmojiPicker";
+import NudeButton from "~/components/NudeButton";
 import Star, { AnimatedStar } from "~/components/Star";
-import useEmojiWidth from "~/hooks/useEmojiWidth";
+import usePickerTheme from "~/hooks/usePickerTheme";
+import useStores from "~/hooks/useStores";
 import { isModKey } from "~/utils/keyboard";
 
 type Props = {
@@ -50,6 +54,9 @@ const EditableTitle = React.forwardRef(
     }: Props,
     ref: React.RefObject<RefHandle>
   ) => {
+    const pickerTheme = usePickerTheme();
+    const { documents } = useStores();
+
     const handleClick = React.useCallback(() => {
       ref.current?.focus();
     }, [ref]);
@@ -112,10 +119,24 @@ const EditableTitle = React.forwardRef(
       [ref, onChange]
     );
 
-    const emojiWidth = useEmojiWidth(document.emoji, {
-      fontSize,
-      lineHeight,
-    });
+    const handleEmojiSelect = React.useCallback(
+      async (emoji: string) => {
+        await documents.update({
+          id: document.id,
+          title: document.title,
+          emoji,
+        });
+      },
+      [documents, document]
+    );
+
+    const handleEmojiRemove = React.useCallback(async () => {
+      await documents.update({
+        id: document.id,
+        title: document.title,
+        emoji: null,
+      });
+    }, [documents, document]);
 
     const value =
       !document.title && readOnly ? document.titleWithDefault : document.title;
@@ -128,7 +149,6 @@ const EditableTitle = React.forwardRef(
         onBlur={onBlur}
         placeholder={placeholder}
         value={value}
-        $emojiWidth={emojiWidth}
         $isStarred={document.isStarred}
         autoFocus={!document.title}
         maxLength={DocumentValidation.maxTitleLength}
@@ -136,6 +156,20 @@ const EditableTitle = React.forwardRef(
         dir="auto"
         ref={ref}
       >
+        <EmojiPicker
+          disclosure={
+            <EmojiButton size={32} onClick={(ev) => ev.stopPropagation()}>
+              {document.emoji ? (
+                <Emoji size="24px" native={document.emoji} />
+              ) : (
+                <PlaceholderEmoji size={32} />
+              )}
+            </EmojiButton>
+          }
+          onEmojiSelect={handleEmojiSelect}
+          onEmojiRemove={handleEmojiRemove}
+          theme={pickerTheme}
+        />
         {starrable !== false && <StarButton document={document} size={32} />}
       </Title>
     );
@@ -157,10 +191,10 @@ const StarButton = styled(Star)`
 
 type TitleProps = {
   $isStarred: boolean;
-  $emojiWidth: number;
 };
 
 const Title = styled(ContentEditable)<TitleProps>`
+  position: relative;
   line-height: ${lineHeight};
   margin-top: 1em;
   margin-bottom: 0.5em;
@@ -178,10 +212,6 @@ const Title = styled(ContentEditable)<TitleProps>`
     color: ${(props) => props.theme.placeholder};
     -webkit-text-fill-color: ${(props) => props.theme.placeholder};
   }
-
-  ${breakpoint("tablet")`
-    margin-left: ${(props: TitleProps) => -props.$emojiWidth}px;
-  `};
 
   ${AnimatedStar} {
     opacity: ${(props) => (props.$isStarred ? "1 !important" : 0)};
@@ -202,6 +232,16 @@ const Title = styled(ContentEditable)<TitleProps>`
     -webkit-text-fill-color: ${light.text};
     background: none;
   }
+`;
+
+const EmojiButton = styled(NudeButton)`
+  position: absolute;
+  top: 8px;
+  left: -40px;
+`;
+
+const PlaceholderEmoji = styled(SmileyIcon)`
+  margin-top: 2px;
 `;
 
 export default observer(EditableTitle);
