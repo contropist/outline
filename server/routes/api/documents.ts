@@ -44,6 +44,7 @@ import {
   assertPresent,
   assertPositiveInteger,
   assertNotEmpty,
+  assertEmoji,
 } from "@server/validation";
 import env from "../../env";
 import pagination from "./middlewares/pagination";
@@ -816,6 +817,7 @@ router.post("documents.update", auth(), async (ctx) => {
     id,
     title,
     text,
+    emoji,
     fullWidth,
     publish,
     lastRevision,
@@ -826,6 +828,9 @@ router.post("documents.update", auth(), async (ctx) => {
   assertPresent(id, "id is required");
   if (append) {
     assertPresent(text, "Text is required while appending");
+  }
+  if (emoji) {
+    assertEmoji(emoji);
   }
   const { user } = ctx.state;
 
@@ -849,6 +854,7 @@ router.post("documents.update", auth(), async (ctx) => {
       document,
       user,
       title,
+      emoji,
       text,
       fullWidth,
       publish,

@@ -35,7 +35,6 @@ import MarkdownSerializer from "slate-md-serializer";
 import isUUID from "validator/lib/isUUID";
 import { DateFilter } from "@shared/types";
 import getTasks from "@shared/utils/getTasks";
-import parseTitle from "@shared/utils/parseTitle";
 import unescape from "@shared/utils/unescape";
 import { SLUG_URL_REGEX } from "@shared/utils/urlHelpers";
 import { DocumentValidation } from "@shared/validations";
@@ -336,10 +335,6 @@ class Document extends ParanoidModel {
 
   @BeforeUpdate
   static processUpdate(model: Document) {
-    const { emoji } = parseTitle(model.title);
-    // emoji in the title is split out for easier display
-    model.emoji = emoji || null;
-
     // ensure documents have a title
     model.title = model.title || "";
 

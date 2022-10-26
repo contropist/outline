@@ -1969,6 +1969,34 @@ describe("#documents.update", () => {
     expect(events.length).toEqual(1);
   });
 
+  it("should fail to update an invalid emoji value", async () => {
+    const { user, document } = await seed();
+    const res = await server.post("/api/documents.update", {
+      body: {
+        token: user.getJwtToken(),
+        id: document.id,
+        emoji: ":)",
+      },
+    });
+    const body = await res.json();
+    expect(res.status).toEqual(400);
+    expect(body.message).toBe("Invalid emoji!");
+  });
+
+  it("should successfully update the emoji", async () => {
+    const { user, document } = await seed();
+    const res = await server.post("/api/documents.update", {
+      body: {
+        token: user.getJwtToken(),
+        id: document.id,
+        emoji: "😂",
+      },
+    });
+    const body = await res.json();
+    expect(res.status).toEqual(200);
+    expect(body.data.emoji).toBe("😂");
+  });
+
   it("should not add template to collection structure when publishing", async () => {
     const user = await buildUser();
     const collection = await buildCollection({
