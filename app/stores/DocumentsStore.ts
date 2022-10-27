@@ -644,7 +644,7 @@ export default class DocumentsStore extends BaseStore<Document> {
   async update(
     params: {
       id: string;
-      title: string;
+      title?: string;
       emoji?: string | null;
       text?: string;
       fullWidth?: boolean;
