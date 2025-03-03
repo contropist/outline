@@ -1,15 +1,18 @@
 import { AttachmentIcon } from "outline-icons";
 import * as React from "react";
 import styled from "styled-components";
+import { s } from "../../styles";
 import { stringToColor } from "../../utils/color";
 
 type Props = {
-  title: string;
+  /** The title of the file */
+  title?: string;
+  /** The size of the icon */
   size?: number;
 };
 
 export default function FileExtension(props: Props) {
-  const parts = props.title.split(".");
+  const parts = (props.title ?? "Unknown").split(".");
   const extension = parts.length > 1 ? parts.pop() : undefined;
 
   return (
@@ -17,17 +20,13 @@ export default function FileExtension(props: Props) {
       style={{ background: stringToColor(extension || "") }}
       $size={props.size || 28}
     >
-      {extension ? (
-        <span>{extension?.slice(0, 4)}</span>
-      ) : (
-        <AttachmentIcon color="currentColor" />
-      )}
+      {extension ? <span>{extension?.slice(0, 4)}</span> : <AttachmentIcon />}
     </Icon>
   );
 }
 
 const Icon = styled.span<{ $size: number }>`
-  font-family: ${(props) => props.theme.fontFamilyMono};
+  font-family: ${s("fontFamilyMono")};
   display: inline-flex;
   align-items: center;
   justify-content: center;

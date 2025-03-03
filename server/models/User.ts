@@ -1,8 +1,17 @@
 import crypto from "crypto";
-import { addMinutes, subMinutes } from "date-fns";
+import { addHours, addMinutes, subMinutes } from "date-fns";
 import JWT from "jsonwebtoken";
 import { Context } from "koa";
-import { Transaction, QueryTypes, SaveOptions, Op } from "sequelize";
+import {
+  Transaction,
+  QueryTypes,
+  SaveOptions,
+  Op,
+  FindOptions,
+  InferAttributes,
+  InferCreationAttributes,
+} from "sequelize";
+import { type InstanceUpdateOptions } from "sequelize";
 import {
   Table,
   Column,
@@ -12,42 +21,47 @@ import {
   IsIn,
   BeforeDestroy,
   BeforeCreate,
-  AfterCreate,
   BelongsTo,
   ForeignKey,
   DataType,
   HasMany,
   Scopes,
   IsDate,
-  IsUrl,
   AllowNull,
   AfterUpdate,
+  BeforeUpdate,
 } from "sequelize-typescript";
+import { UserPreferenceDefaults } from "@shared/constants";
 import { languages } from "@shared/i18n";
+import type { NotificationSettings } from "@shared/types";
 import {
   CollectionPermission,
   UserPreference,
   UserPreferences,
+  NotificationEventType,
+  NotificationEventDefaults,
+  UserRole,
+  DocumentPermission,
 } from "@shared/types";
+import { UserRoleHelper } from "@shared/utils/UserRoleHelper";
 import { stringToColor } from "@shared/utils/color";
+import { locales } from "@shared/utils/date";
 import env from "@server/env";
 import DeleteAttachmentTask from "@server/queues/tasks/DeleteAttachmentTask";
+import { APIContext } from "@server/types";
 import parseAttachmentIds from "@server/utils/parseAttachmentIds";
 import { ValidationError } from "../errors";
-import ApiKey from "./ApiKey";
 import Attachment from "./Attachment";
+import AuthenticationProvider from "./AuthenticationProvider";
 import Collection from "./Collection";
-import CollectionUser from "./CollectionUser";
-import NotificationSetting from "./NotificationSetting";
-import Star from "./Star";
+import Group from "./Group";
 import Team from "./Team";
 import UserAuthentication from "./UserAuthentication";
+import UserMembership from "./UserMembership";
 import ParanoidModel from "./base/ParanoidModel";
-import Encrypted, {
-  setEncryptedColumn,
-  getEncryptedColumn,
-} from "./decorators/Encrypted";
+import Encrypted from "./decorators/Encrypted";
 import Fix from "./decorators/Fix";
+import IsUrlOrRelativePath from "./validators/IsUrlOrRelativePath";
 import Length from "./validators/Length";
 import NotContainsUrl from "./validators/NotContainsUrl";
 
@@ -62,17 +76,22 @@ export enum UserFlag {
   MobileWeb = "mobileWeb",
 }
 
-export enum UserRole {
-  Member = "member",
-  Viewer = "viewer",
-}
-
 @Scopes(() => ({
   withAuthentications: {
     include: [
       {
+        separate: true,
         model: UserAuthentication,
         as: "authentications",
+        include: [
+          {
+            model: AuthenticationProvider,
+            as: "authenticationProvider",
+            where: {
+              enabled: true,
+            },
+          },
+        ],
       },
     ],
   },
@@ -104,39 +123,27 @@ export enum UserRole {
 }))
 @Table({ tableName: "users", modelName: "user" })
 @Fix
-class User extends ParanoidModel {
+class User extends ParanoidModel<
+  InferAttributes<User>,
+  Partial<InferCreationAttributes<User>>
+> {
   @IsEmail
   @Length({ max: 255, msg: "User email must be 255 characters or less" })
   @Column
   email: string | null;
 
   @NotContainsUrl
-  @Length({ max: 255, msg: "User username must be 255 characters or less" })
-  @Column
-  username: string | null;
-
-  @NotContainsUrl
   @Length({ max: 255, msg: "User name must be 255 characters or less" })
   @Column
   name: string;
 
-  @Default(false)
-  @Column
-  isAdmin: boolean;
-
-  @Default(false)
-  @Column
-  isViewer: boolean;
+  @Default(UserRole.Member)
+  @Column(DataType.ENUM(...Object.values(UserRole)))
+  role: UserRole;
 
   @Column(DataType.BLOB)
   @Encrypted
-  get jwtSecret() {
-    return getEncryptedColumn(this, "jwtSecret");
-  }
-
-  set jwtSecret(value: string) {
-    setEncryptedColumn(this, "jwtSecret", value);
-  }
+  jwtSecret: string;
 
   @IsDate
   @Column
@@ -169,13 +176,20 @@ class User extends ParanoidModel {
   @Column(DataType.JSONB)
   preferences: UserPreferences | null;
 
+  @Column(DataType.JSONB)
+  notificationSettings: NotificationSettings;
+
   @Default(env.DEFAULT_LANGUAGE)
   @IsIn([languages])
-  @Column
-  language: string;
+  @Column(DataType.STRING)
+  language: keyof typeof locales | null;
 
   @AllowNull
-  @IsUrl
+  @Column(DataType.STRING)
+  timezone: string | null;
+
+  @AllowNull
+  @IsUrlOrRelativePath
   @Length({ max: 4096, msg: "avatarUrl must be less than 4096 characters" })
   @Column(DataType.STRING)
   get avatarUrl() {
@@ -220,11 +234,42 @@ class User extends ParanoidModel {
   // getters
 
   get isSuspended(): boolean {
-    return !!this.suspendedAt;
+    return !!this.suspendedAt || !!this.team?.isSuspended;
   }
 
+  /**
+   * Whether the user has been invited but not yet signed in.
+   */
   get isInvited() {
     return !this.lastActiveAt;
+  }
+
+  /**
+   * Whether the user is an admin.
+   */
+  get isAdmin() {
+    return this.role === UserRole.Admin;
+  }
+
+  /**
+   * Whether the user is a member (editor).
+   */
+  get isMember() {
+    return this.role === UserRole.Member;
+  }
+
+  /**
+   * Whether the user is a viewer.
+   */
+  get isViewer() {
+    return this.role === UserRole.Viewer;
+  }
+
+  /**
+   * Whether the user is a guest.
+   */
+  get isGuest() {
+    return this.role === UserRole.Guest;
   }
 
   get color() {
@@ -235,6 +280,12 @@ class User extends ParanoidModel {
     return this.isViewer
       ? CollectionPermission.Read
       : CollectionPermission.ReadWrite;
+  }
+
+  get defaultDocumentPermission(): DocumentPermission {
+    return this.isViewer
+      ? DocumentPermission.Read
+      : DocumentPermission.ReadWrite;
   }
 
   /**
@@ -256,6 +307,32 @@ class User extends ParanoidModel {
   // instance methods
 
   /**
+   * Sets a preference for the users notification settings.
+   *
+   * @param type The type of notification event
+   * @param value Set the preference to true/false
+   */
+  public setNotificationEventType = (
+    type: NotificationEventType,
+    value = true
+  ) => {
+    this.notificationSettings = {
+      ...this.notificationSettings,
+      [type]: value,
+    };
+  };
+
+  /**
+   * Returns the current preference for the given notification event type taking
+   * into account the default system value.
+   *
+   * @param type The type of notification event
+   * @returns The current preference
+   */
+  public subscribedToEventType = (type: NotificationEventType) =>
+    this.notificationSettings[type] ?? NotificationEventDefaults[type] ?? false;
+
+  /**
    * User flags are for storing information on a user record that is not visible
    * to the user itself.
    *
@@ -269,8 +346,10 @@ class User extends ParanoidModel {
     }
     const binary = value ? 1 : 0;
     if (this.flags[flag] !== binary) {
-      this.flags[flag] = binary;
-      this.changed("flags", true);
+      this.flags = {
+        ...this.flags,
+        [flag]: binary,
+      };
     }
 
     return this.flags;
@@ -282,9 +361,7 @@ class User extends ParanoidModel {
    * @param flag The flag to retrieve
    * @returns The flag value
    */
-  public getFlag = (flag: UserFlag) => {
-    return this.flags?.[flag] ?? 0;
-  };
+  public getFlag = (flag: UserFlag) => this.flags?.[flag] ?? 0;
 
   /**
    * User flags are for storing information on a user record that is not visible
@@ -298,9 +375,10 @@ class User extends ParanoidModel {
     if (!this.flags) {
       this.flags = {};
     }
-    this.flags[flag] = (this.flags[flag] ?? 0) + value;
-    this.changed("flags", true);
-
+    this.flags = {
+      ...this.flags,
+      [flag]: (this.flags[flag] ?? 0) + value,
+    };
     return this.flags;
   };
 
@@ -315,24 +393,57 @@ class User extends ParanoidModel {
     if (!this.preferences) {
       this.preferences = {};
     }
-    this.preferences[preference] = value;
-    this.changed("preferences", true);
-
+    this.preferences = {
+      ...this.preferences,
+      [preference]: value,
+    };
     return this.preferences;
   };
 
   /**
-   * Returns the passed preference value
+   * Returns the value of the givem preference
    *
    * @param preference The user preference to retrieve
-   * @param fallback An optional fallback value, defaults to false.
-   * @returns The preference value if set, else undefined
+   * @returns The preference value if set, else the default value.
    */
-  public getPreference = (preference: UserPreference, fallback = false) => {
-    return this.preferences?.[preference] ?? fallback;
-  };
+  public getPreference = (preference: UserPreference) =>
+    this.preferences?.[preference] ??
+    UserPreferenceDefaults[preference] ??
+    false;
 
-  collectionIds = async (options = {}) => {
+  /**
+   * Returns the user's active groups.
+   *
+   * @param options Additional options to pass to the find
+   * @returns An array of groups
+   */
+  public groups = (options: FindOptions<Group> = {}) =>
+    Group.scope({
+      method: ["withMembership", this.id],
+    }).findAll({
+      where: {
+        teamId: this.teamId,
+      },
+      ...options,
+    });
+
+  /**
+   * Returns the user's active group ids.
+   *
+   * @param options Additional options to pass to the find
+   * @returns An array of group ids
+   */
+  public groupIds = async (options: FindOptions<Group> = {}) =>
+    (await this.groups(options)).map((g) => g.id);
+
+  /**
+   * Returns the user's active collection ids. This includes collections the user
+   * has access to through group memberships.
+   *
+   * @param options Additional options to pass to the find
+   * @returns An array of collection ids
+   */
+  public collectionIds = async (options: FindOptions<Collection> = {}) => {
     const collectionStubs = await Collection.scope({
       method: ["withMembership", this.id],
     }).findAll({
@@ -347,10 +458,12 @@ class User extends ParanoidModel {
     return collectionStubs
       .filter(
         (c) =>
-          c.permission === CollectionPermission.Read ||
-          c.permission === CollectionPermission.ReadWrite ||
+          (Object.values(CollectionPermission).includes(
+            c.permission as CollectionPermission
+          ) &&
+            !this.isGuest) ||
           c.memberships.length > 0 ||
-          c.collectionGroupMemberships.length > 0
+          c.groupMemberships.length > 0
       )
       .map((c) => c.id);
   };
@@ -409,8 +522,8 @@ class User extends ParanoidModel {
    * @param expiresAt The time the token will expire at
    * @returns The session token
    */
-  getJwtToken = (expiresAt?: Date) => {
-    return JWT.sign(
+  getJwtToken = (expiresAt?: Date) =>
+    JWT.sign(
       {
         id: this.id,
         expiresAt: expiresAt ? expiresAt.toISOString() : undefined,
@@ -418,7 +531,22 @@ class User extends ParanoidModel {
       },
       this.jwtSecret
     );
-  };
+
+  /**
+   * Returns a session token that is used to make collaboration requests and is
+   * stored in the client memory.
+   *
+   * @returns The session token
+   */
+  getCollaborationToken = () =>
+    JWT.sign(
+      {
+        id: this.id,
+        expiresAt: addHours(new Date(), 24).toISOString(),
+        type: "collaboration",
+      },
+      this.jwtSecret
+    );
 
   /**
    * Returns a temporary token that is only used for transferring a session
@@ -427,8 +555,8 @@ class User extends ParanoidModel {
    *
    * @returns The transfer token
    */
-  getTransferToken = () => {
-    return JWT.sign(
+  getTransferToken = () =>
+    JWT.sign(
       {
         id: this.id,
         createdAt: new Date().toISOString(),
@@ -437,7 +565,6 @@ class User extends ParanoidModel {
       },
       this.jwtSecret
     );
-  };
 
   /**
    * Returns a temporary token that is only used for logging in from an email
@@ -445,8 +572,8 @@ class User extends ParanoidModel {
    *
    * @returns The email signin token
    */
-  getEmailSigninToken = () => {
-    return JWT.sign(
+  getEmailSigninToken = () =>
+    JWT.sign(
       {
         id: this.id,
         createdAt: new Date().toISOString(),
@@ -454,15 +581,32 @@ class User extends ParanoidModel {
       },
       this.jwtSecret
     );
-  };
+
+  /**
+   * Returns a temporary token that can be used to update the users
+   * email address.
+   *
+   * @param email The new email address
+   * @returns The token
+   */
+  getEmailUpdateToken = (email: string) =>
+    JWT.sign(
+      {
+        id: this.id,
+        createdAt: new Date().toISOString(),
+        email,
+        type: "email-update",
+      },
+      this.jwtSecret
+    );
 
   /**
    * Returns a list of teams that have a user matching this user's email.
    *
    * @returns A promise resolving to a list of teams
    */
-  availableTeams = async () => {
-    return Team.findAll({
+  availableTeams = async () =>
+    Team.findAll({
       include: [
         {
           model: this.constructor as typeof User,
@@ -470,63 +614,8 @@ class User extends ParanoidModel {
           where: { email: this.email },
         },
       ],
+      order: [["createdAt", "ASC"]],
     });
-  };
-
-  demote = async (to: UserRole, options?: SaveOptions<User>) => {
-    const res = await (this.constructor as typeof User).findAndCountAll({
-      where: {
-        teamId: this.teamId,
-        isAdmin: true,
-        id: {
-          [Op.ne]: this.id,
-        },
-      },
-      limit: 1,
-    });
-
-    if (res.count >= 1) {
-      if (to === "member") {
-        await this.update(
-          {
-            isAdmin: false,
-            isViewer: false,
-          },
-          options
-        );
-      } else if (to === "viewer") {
-        await this.update(
-          {
-            isAdmin: false,
-            isViewer: true,
-          },
-          options
-        );
-        await CollectionUser.update(
-          {
-            permission: CollectionPermission.Read,
-          },
-          {
-            ...options,
-            where: {
-              userId: this.id,
-            },
-          }
-        );
-      }
-
-      return undefined;
-    } else {
-      throw ValidationError("At least one admin is required");
-    }
-  };
-
-  promote = () => {
-    return this.update({
-      isAdmin: true,
-      isViewer: false,
-    });
-  };
 
   // hooks
 
@@ -535,34 +624,9 @@ class User extends ParanoidModel {
     model: User,
     options: { transaction: Transaction }
   ) => {
-    await NotificationSetting.destroy({
-      where: {
-        userId: model.id,
-      },
-      transaction: options.transaction,
-    });
-    await ApiKey.destroy({
-      where: {
-        userId: model.id,
-      },
-      transaction: options.transaction,
-    });
-    await Star.destroy({
-      where: {
-        userId: model.id,
-      },
-      transaction: options.transaction,
-    });
-    await UserAuthentication.destroy({
-      where: {
-        userId: model.id,
-      },
-      transaction: options.transaction,
-    });
     model.email = null;
     model.name = "Unknown";
     model.avatarUrl = null;
-    model.username = null;
     model.lastActiveIp = null;
     model.lastSignedInIp = null;
 
@@ -579,16 +643,67 @@ class User extends ParanoidModel {
     model.jwtSecret = crypto.randomBytes(64).toString("hex");
   };
 
+  @BeforeUpdate
+  static async checkRoleChange(
+    model: User,
+    options: InstanceUpdateOptions<InferAttributes<User>>
+  ) {
+    const previousRole = model.previous("role");
+
+    if (
+      model.changed("role") &&
+      previousRole === UserRole.Admin &&
+      UserRoleHelper.isRoleLower(model.role, UserRole.Admin)
+    ) {
+      const { count } = await this.findAndCountAll({
+        where: {
+          teamId: model.teamId,
+          role: UserRole.Admin,
+          id: {
+            [Op.ne]: model.id,
+          },
+        },
+        limit: 1,
+        transaction: options.transaction,
+      });
+      if (count === 0) {
+        throw ValidationError("At least one admin is required");
+      }
+    }
+  }
+
+  @AfterUpdate
+  static async updateMembershipPermissions(
+    model: User,
+    options: InstanceUpdateOptions<InferAttributes<User>>
+  ) {
+    const previousRole = model.previous("role");
+
+    if (
+      previousRole &&
+      model.changed("role") &&
+      UserRoleHelper.isRoleLower(model.role, UserRole.Member) &&
+      UserRoleHelper.isRoleHigher(previousRole, UserRole.Viewer)
+    ) {
+      await UserMembership.update(
+        {
+          permission: CollectionPermission.Read,
+        },
+        {
+          transaction: options.transaction,
+          where: {
+            userId: model.id,
+          },
+        }
+      );
+    }
+  }
+
   @AfterUpdate
   static deletePreviousAvatar = async (model: User) => {
-    if (
-      model.previous("avatarUrl") &&
-      model.previous("avatarUrl") !== model.avatarUrl
-    ) {
-      const attachmentIds = parseAttachmentIds(
-        model.previous("avatarUrl"),
-        true
-      );
+    const previousAvatarUrl = model.previous("avatarUrl");
+    if (previousAvatarUrl && previousAvatarUrl !== model.avatarUrl) {
+      const attachmentIds = parseAttachmentIds(previousAvatarUrl, true);
       if (!attachmentIds.length) {
         return;
       }
@@ -604,73 +719,28 @@ class User extends ParanoidModel {
       if (attachment) {
         await DeleteAttachmentTask.schedule({
           attachmentId: attachment.id,
+          teamId: model.teamId,
         });
       }
     }
   };
 
-  // By default when a user signs up we subscribe them to email notifications
-  // when documents they created are edited by other team members and onboarding.
-  // If the user is an admin, they will also be subscribed to export_completed
-  // notifications.
-  @AfterCreate
-  static subscribeToNotifications = async (
-    model: User,
-    options: { transaction: Transaction }
-  ) => {
-    await Promise.all([
-      NotificationSetting.findOrCreate({
-        where: {
-          userId: model.id,
-          teamId: model.teamId,
-          event: "documents.update",
-        },
-        transaction: options.transaction,
-      }),
-      NotificationSetting.findOrCreate({
-        where: {
-          userId: model.id,
-          teamId: model.teamId,
-          event: "emails.onboarding",
-        },
-        transaction: options.transaction,
-      }),
-      NotificationSetting.findOrCreate({
-        where: {
-          userId: model.id,
-          teamId: model.teamId,
-          event: "emails.features",
-        },
-        transaction: options.transaction,
-      }),
-      NotificationSetting.findOrCreate({
-        where: {
-          userId: model.id,
-          teamId: model.teamId,
-          event: "emails.invite_accepted",
-        },
-        transaction: options.transaction,
-      }),
-    ]);
-
-    if (model.isAdmin) {
-      await NotificationSetting.findOrCreate({
-        where: {
-          userId: model.id,
-          teamId: model.teamId,
-          event: "emails.export_completed",
-        },
-        transaction: options.transaction,
-      });
-    }
+  static findByEmail = async function (ctx: APIContext, email: string) {
+    return this.findOne({
+      where: {
+        teamId: ctx.context.auth.user.teamId,
+        email: email.trim().toLowerCase(),
+      },
+      ...ctx.context,
+    });
   };
 
   static getCounts = async function (teamId: string) {
     const countSql = `
       SELECT
         COUNT(CASE WHEN "suspendedAt" IS NOT NULL THEN 1 END) as "suspendedCount",
-        COUNT(CASE WHEN "isAdmin" = true THEN 1 END) as "adminCount",
-        COUNT(CASE WHEN "isViewer" = true THEN 1 END) as "viewerCount",
+        COUNT(CASE WHEN "role" = :roleAdmin THEN 1 END) as "adminCount",
+        COUNT(CASE WHEN "role" = :roleViewer THEN 1 END) as "viewerCount",
         COUNT(CASE WHEN "lastActiveAt" IS NULL THEN 1 END) as "invitedCount",
         COUNT(CASE WHEN "suspendedAt" IS NULL AND "lastActiveAt" IS NOT NULL THEN 1 END) as "activeCount",
         COUNT(*) as count
@@ -682,6 +752,8 @@ class User extends ParanoidModel {
       type: QueryTypes.SELECT,
       replacements: {
         teamId,
+        roleAdmin: UserRole.Admin,
+        roleViewer: UserRole.Viewer,
       },
     });
 

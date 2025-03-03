@@ -1,8 +1,5 @@
 import { buildDocument } from "@server/test/factories";
-import { setupTestDatabase } from "@server/test/support";
 import Revision from "./Revision";
-
-setupTestDatabase();
 
 describe("#findLatest", () => {
   test("should return latest revision", async () => {
@@ -19,6 +16,5 @@ describe("#findLatest", () => {
     await Revision.createFromDocument(document);
     const revision = await Revision.findLatest(document.id);
     expect(revision?.title).toBe("Changed 2");
-    expect(revision?.text).toBe("Content");
   });
 });

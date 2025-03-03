@@ -1,6 +1,10 @@
 import { addMinutes, subMinutes } from "date-fns";
 import invariant from "invariant";
-import { SaveOptions } from "sequelize";
+import {
+  InferAttributes,
+  InferCreationAttributes,
+  SaveOptions,
+} from "sequelize";
 import {
   BeforeCreate,
   BelongsTo,
@@ -11,41 +15,28 @@ import {
   Unique,
 } from "sequelize-typescript";
 import Logger from "@server/logging/Logger";
-import { AuthenticationError } from "../errors";
 import AuthenticationProvider from "./AuthenticationProvider";
 import User from "./User";
 import IdModel from "./base/IdModel";
-import Encrypted, {
-  getEncryptedColumn,
-  setEncryptedColumn,
-} from "./decorators/Encrypted";
+import Encrypted from "./decorators/Encrypted";
 import Fix from "./decorators/Fix";
 
 @Table({ tableName: "user_authentications", modelName: "user_authentication" })
 @Fix
-class UserAuthentication extends IdModel {
+class UserAuthentication extends IdModel<
+  InferAttributes<UserAuthentication>,
+  Partial<InferCreationAttributes<UserAuthentication>>
+> {
   @Column(DataType.ARRAY(DataType.STRING))
   scopes: string[];
 
   @Column(DataType.BLOB)
   @Encrypted
-  get accessToken() {
-    return getEncryptedColumn(this, "accessToken");
-  }
-
-  set accessToken(value: string) {
-    setEncryptedColumn(this, "accessToken", value);
-  }
+  accessToken: string;
 
   @Column(DataType.BLOB)
   @Encrypted
-  get refreshToken() {
-    return getEncryptedColumn(this, "refreshToken");
-  }
-
-  set refreshToken(value: string) {
-    setEncryptedColumn(this, "refreshToken", value);
-  }
+  refreshToken: string;
 
   @Column
   providerId: string;
@@ -94,6 +85,10 @@ class UserAuthentication extends IdModel {
   ): Promise<boolean> {
     // Check a maximum of once every 5 minutes
     if (this.lastValidatedAt > subMinutes(Date.now(), 5) && !force) {
+      Logger.debug(
+        "authentication",
+        "Recently validated, skipping access token validation"
+      );
       return true;
     }
 
@@ -121,7 +116,7 @@ class UserAuthentication extends IdModel {
 
       return true;
     } catch (error) {
-      if (error instanceof AuthenticationError) {
+      if (error.id === "authentication_required") {
         return false;
       }
 
@@ -142,24 +137,40 @@ class UserAuthentication extends IdModel {
     authenticationProvider: AuthenticationProvider,
     options: SaveOptions
   ): Promise<boolean> {
-    if (
-      this.expiresAt > addMinutes(Date.now(), 5) ||
-      !this.refreshToken ||
-      // Some providers send no expiry depending on setup, in this case we can't
-      // refresh and assume the session is valid until logged out.
-      !this.expiresAt
-    ) {
+    if (this.expiresAt > addMinutes(Date.now(), 5)) {
+      Logger.debug(
+        "authentication",
+        "Existing token is still valid, skipping refresh"
+      );
       return false;
     }
 
-    Logger.info("utils", "Refreshing expiring access token", {
+    if (!this.refreshToken) {
+      Logger.debug(
+        "authentication",
+        "No refresh token found, skipping refresh"
+      );
+      return false;
+    }
+
+    // Some providers send no expiry depending on setup, in this case we can't
+    // refresh and assume the session is valid until logged out.
+    if (!this.expiresAt) {
+      Logger.debug("authentication", "No expiry found, skipping refresh");
+      return false;
+    }
+
+    Logger.info("authentication", "Refreshing expiring access token", {
       id: this.id,
       userId: this.userId,
     });
 
     const client = authenticationProvider.oauthClient;
     if (client) {
-      const response = await client.rotateToken(this.refreshToken);
+      const response = await client.rotateToken(
+        this.accessToken,
+        this.refreshToken
+      );
 
       // Not all OAuth providers return a new refreshToken so we need to guard
       // against setting to an empty value.
@@ -171,10 +182,14 @@ class UserAuthentication extends IdModel {
       await this.save(options);
     }
 
-    Logger.info("utils", "Successfully refreshed expired access token", {
-      id: this.id,
-      userId: this.userId,
-    });
+    Logger.info(
+      "authentication",
+      "Successfully refreshed expired access token",
+      {
+        id: this.id,
+        userId: this.userId,
+      }
+    );
 
     return true;
   }

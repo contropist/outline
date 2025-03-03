@@ -1,16 +1,20 @@
+import { Hook, PluginManager } from "@server/utils/PluginManager";
 import { requireDirectory } from "@server/utils/fs";
+import BaseTask from "./BaseTask";
 
-const tasks = {};
+const tasks: Record<string, typeof BaseTask> = {};
 
-requireDirectory(__dirname).forEach(([module, id]) => {
-  // @ts-expect-error ts-migrate(2339) FIXME: Property 'default' does not exist on type 'unknown'
-  const { default: Task } = module;
-
-  if (id === "index") {
-    return;
+requireDirectory<{ default: typeof BaseTask }>(__dirname).forEach(
+  ([module, id]) => {
+    if (id === "index") {
+      return;
+    }
+    tasks[id] = module.default;
   }
+);
 
-  tasks[id] = Task;
+PluginManager.getHooks(Hook.Task).forEach((hook) => {
+  tasks[hook.value.name] = hook.value;
 });
 
 export default tasks;

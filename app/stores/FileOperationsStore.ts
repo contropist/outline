@@ -1,10 +1,11 @@
-import { orderBy } from "lodash";
+import orderBy from "lodash/orderBy";
 import { computed } from "mobx";
+import { FileOperationType } from "@shared/types";
 import FileOperation from "~/models/FileOperation";
-import BaseStore, { RPCAction } from "./BaseStore";
 import RootStore from "./RootStore";
+import Store, { RPCAction } from "./base/Store";
 
-export default class FileOperationsStore extends BaseStore<FileOperation> {
+export default class FileOperationsStore extends Store<FileOperation> {
   actions = [RPCAction.List, RPCAction.Info, RPCAction.Delete];
 
   constructor(rootStore: RootStore) {
@@ -15,7 +16,8 @@ export default class FileOperationsStore extends BaseStore<FileOperation> {
   get imports(): FileOperation[] {
     return orderBy(
       Array.from(this.data.values()).reduce(
-        (acc, fileOp) => (fileOp.type === "import" ? [...acc, fileOp] : acc),
+        (acc, fileOp) =>
+          fileOp.type === FileOperationType.Import ? [...acc, fileOp] : acc,
         []
       ),
       "createdAt",
@@ -27,7 +29,8 @@ export default class FileOperationsStore extends BaseStore<FileOperation> {
   get exports(): FileOperation[] {
     return orderBy(
       Array.from(this.data.values()).reduce(
-        (acc, fileOp) => (fileOp.type === "export" ? [...acc, fileOp] : acc),
+        (acc, fileOp) =>
+          fileOp.type === FileOperationType.Export ? [...acc, fileOp] : acc,
         []
       ),
       "createdAt",

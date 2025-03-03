@@ -1,11 +1,16 @@
 import * as React from "react";
-import { Switch, Redirect } from "react-router-dom";
+import { RouteComponentProps, Switch } from "react-router-dom";
+import DocumentNew from "~/scenes/DocumentNew";
 import Error404 from "~/scenes/Error404";
 import Route from "~/components/ProfiledRoute";
-import useAuthorizedSettingsConfig from "~/hooks/useAuthorizedSettingsConfig";
+import useSettingsConfig from "~/hooks/useSettingsConfig";
+import lazy from "~/utils/lazyWithRetry";
+import { matchDocumentSlug, settingsPath } from "~/utils/routeHelpers";
+
+const Document = lazy(() => import("~/scenes/Document"));
 
 export default function SettingsRoutes() {
-  const configs = useAuthorizedSettingsConfig();
+  const configs = useSettingsConfig();
 
   return (
     <Switch>
@@ -17,10 +22,18 @@ export default function SettingsRoutes() {
           component={config.component}
         />
       ))}
-      {/* old routes */}
-      <Redirect from="/settings/import-export" to="/settings/export" />
-      <Redirect from="/settings/people" to="/settings/members" />
-      <Redirect from="/settings/profile" to="/settings" />
+      <Route
+        exact
+        path={`${settingsPath("templates")}/${matchDocumentSlug}`}
+        component={Document}
+      />
+      <Route
+        exact
+        path={`${settingsPath("templates")}/new`}
+        component={(props: RouteComponentProps) => (
+          <DocumentNew {...props} template />
+        )}
+      />
       <Route component={Error404} />
     </Switch>
   );

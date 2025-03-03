@@ -1,7 +1,9 @@
 import { observer } from "mobx-react";
 import { StarredIcon, UnstarredIcon } from "outline-icons";
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import styled, { useTheme } from "styled-components";
+import { hover } from "@shared/styles";
 import Collection from "~/models/Collection";
 import Document from "~/models/Document";
 import {
@@ -10,16 +12,21 @@ import {
 } from "~/actions/definitions/collections";
 import { starDocument, unstarDocument } from "~/actions/definitions/documents";
 import useActionContext from "~/hooks/useActionContext";
-import { hover } from "~/styles";
 import NudeButton from "./NudeButton";
 
 type Props = {
+  /** Target collection */
   collection?: Collection;
+  /** Target document */
   document?: Document;
+  /** Size of the star */
   size?: number;
+  /** Color override for the star */
+  color?: string;
 };
 
-function Star({ size, document, collection, ...rest }: Props) {
+function Star({ size, document, collection, color, ...rest }: Props) {
+  const { t } = useTranslation();
   const theme = useTheme();
   const context = useActionContext({
     activeDocumentId: document?.id,
@@ -36,6 +43,10 @@ function Star({ size, document, collection, ...rest }: Props) {
     <NudeButton
       context={context}
       hideOnActionDisabled
+      tooltip={{
+        content: target.isStarred ? t("Unstar document") : t("Star document"),
+        delay: 500,
+      }}
       action={
         collection
           ? collection.isStarred
@@ -55,7 +66,7 @@ function Star({ size, document, collection, ...rest }: Props) {
       ) : (
         <AnimatedStar
           size={size}
-          color={theme.textTertiary}
+          color={color ?? theme.textTertiary}
           as={UnstarredIcon}
         />
       )}

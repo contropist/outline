@@ -1,9 +1,6 @@
 import "./bootstrap";
-import {
-  updateYFragment,
-  yDocToProsemirrorJSON,
-} from "@getoutline/y-prosemirror";
 import { Node } from "prosemirror-model";
+import { updateYFragment, yDocToProsemirrorJSON } from "y-prosemirror";
 import * as Y from "yjs";
 import { parser, schema, serializer } from "@server/editor";
 import { Document } from "@server/models";
@@ -27,7 +24,6 @@ export default async function main(exit = false) {
       offset: page * limit,
       where: {
         ...(teamId ? { teamId } : {}),
-        state: null,
       },
       order: [["createdAt", "ASC"]],
       paranoid: false,
@@ -81,5 +77,5 @@ export default async function main(exit = false) {
 }
 
 if (process.env.NODE_ENV !== "test") {
-  main(true);
+  void main(true);
 }

@@ -1,6 +1,5 @@
-import MarkdownIt from "markdown-it";
+import MarkdownIt, { Token } from "markdown-it";
 import customFence from "markdown-it-container";
-import Token from "markdown-it/lib/token";
 
 export default function notice(md: MarkdownIt): void {
   return customFence(md, "notice", {

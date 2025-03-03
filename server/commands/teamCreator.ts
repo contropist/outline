@@ -1,7 +1,7 @@
-import { Transaction } from "sequelize";
+import { InferCreationAttributes, Transaction } from "sequelize";
 import slugify from "slugify";
 import { RESERVED_SUBDOMAINS } from "@shared/utils/domains";
-import { APM } from "@server/logging/tracing";
+import { traceFunction } from "@server/logging/tracing";
 import { Team, Event } from "@server/models";
 import { generateAvatarUrl } from "@server/utils/avatars";
 
@@ -50,7 +50,7 @@ async function teamCreator({
       name,
       avatarUrl,
       authenticationProviders,
-    },
+    } as Partial<InferCreationAttributes<Team>>,
     {
       include: ["authenticationProviders"],
       transaction,
@@ -90,7 +90,10 @@ async function findAvailableSubdomain(team: Team, requestedSubdomain: string) {
   let append = 0;
 
   for (;;) {
-    const existing = await Team.findOne({ where: { subdomain } });
+    const existing = await Team.findOne({
+      where: { subdomain },
+      paranoid: false,
+    });
 
     if (existing) {
       // subdomain was invalid or already used, try another
@@ -103,7 +106,6 @@ async function findAvailableSubdomain(team: Team, requestedSubdomain: string) {
   return subdomain;
 }
 
-export default APM.traceFunction({
-  serviceName: "command",
+export default traceFunction({
   spanName: "teamCreator",
 })(teamCreator);

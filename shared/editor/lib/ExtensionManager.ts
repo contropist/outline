@@ -1,9 +1,11 @@
-import { PluginSimple } from "markdown-it";
+import { Options, PluginSimple } from "markdown-it";
+import { observer } from "mobx-react";
 import { keymap } from "prosemirror-keymap";
-import { MarkdownParser, TokenConfig } from "prosemirror-markdown";
-import { Schema } from "prosemirror-model";
+import { MarkdownParser } from "prosemirror-markdown";
+import { MarkSpec, NodeSpec, Schema } from "prosemirror-model";
 import { EditorView } from "prosemirror-view";
-import { Editor } from "~/editor";
+import { Primitive } from "utility-types";
+import type { Editor } from "~/editor";
 import Mark from "../marks/Mark";
 import Node from "../nodes/Node";
 import Extension, { CommandFactory } from "./Extension";
@@ -40,24 +42,76 @@ export default class ExtensionManager {
     });
   }
 
-  get nodes() {
+  get widgets() {
     return this.extensions
+      .filter((extension) => extension.widget({ rtl: false, readOnly: false }))
+      .reduce(
+        (memo, node: Node) => ({
+          ...memo,
+          [node.name]: observer(node.widget as any),
+        }),
+        {}
+      );
+  }
+
+  get nodes() {
+    const nodes: Record<string, NodeSpec> = this.extensions
       .filter((extension) => extension.type === "node")
       .reduce(
-        (nodes, node: Node) => ({
-          ...nodes,
+        (memo, node: Node) => ({
+          ...memo,
           [node.name]: node.schema,
         }),
         {}
       );
+
+    for (const i in nodes) {
+      const { marks } = nodes[i];
+      if (marks) {
+        // We must filter marks from the marks list that are not defined
+        // in the schema for the current editor.
+        nodes[i].marks = marks
+          .split(" ")
+          .filter((m: string) => Object.keys(this.marks).includes(m))
+          .join(" ");
+      }
+    }
+
+    return nodes;
+  }
+
+  get marks() {
+    const marks: Record<string, MarkSpec> = this.extensions
+      .filter((extension) => extension.type === "mark")
+      .reduce(
+        (memo, mark: Mark) => ({
+          ...memo,
+          [mark.name]: mark.schema,
+        }),
+        {}
+      );
+
+    for (const i in marks) {
+      const { excludes } = marks[i];
+      if (excludes) {
+        // We must filter marks from the excludes list that are not defined
+        // in the schema for the current editor.
+        marks[i].excludes = excludes
+          .split(" ")
+          .filter((m: string) => Object.keys(marks).includes(m))
+          .join(" ");
+      }
+    }
+
+    return marks;
   }
 
   serializer() {
     const nodes = this.extensions
       .filter((extension) => extension.type === "node")
       .reduce(
-        (nodes, extension: Node) => ({
-          ...nodes,
+        (memo, extension: Node) => ({
+          ...memo,
           [extension.name]: extension.toMarkdown,
         }),
         {}
@@ -66,8 +120,8 @@ export default class ExtensionManager {
     const marks = this.extensions
       .filter((extension) => extension.type === "mark")
       .reduce(
-        (marks, extension: Mark) => ({
-          ...marks,
+        (memo, extension: Mark) => ({
+          ...memo,
           [extension.name]: extension.toMarkdown,
         }),
         {}
@@ -82,38 +136,30 @@ export default class ExtensionManager {
     plugins,
   }: {
     schema: Schema;
-    rules?: Record<string, any>;
+    rules?: Options;
     plugins?: PluginSimple[];
   }): MarkdownParser {
-    const tokens: Record<string, TokenConfig> = this.extensions
+    const tokens = this.extensions
       .filter(
         (extension) => extension.type === "mark" || extension.type === "node"
       )
       .reduce((nodes, extension: Node | Mark) => {
-        const md = extension.parseMarkdown();
-        if (!md) {
+        const parseSpec = extension.parseMarkdown();
+        if (!parseSpec) {
           return nodes;
         }
 
         return {
           ...nodes,
-          [extension.markdownToken || extension.name]: md,
+          [extension.markdownToken || extension.name]: parseSpec,
         };
       }, {});
 
-    return new MarkdownParser(schema, makeRules({ rules, plugins }), tokens);
-  }
-
-  get marks() {
-    return this.extensions
-      .filter((extension) => extension.type === "mark")
-      .reduce(
-        (marks, { name, schema }: Mark) => ({
-          ...marks,
-          [name]: schema,
-        }),
-        {}
-      );
+    return new MarkdownParser(
+      schema,
+      makeRules({ rules, schema, plugins }),
+      tokens
+    );
   }
 
   get plugins() {
@@ -140,6 +186,7 @@ export default class ExtensionManager {
       .map((extension) =>
         ["node", "mark"].includes(extension.type)
           ? extension.keys({
+              // @ts-expect-error TODO
               type: schema[`${extension.type}s`][extension.name],
               schema,
             })
@@ -160,6 +207,7 @@ export default class ExtensionManager {
       .filter((extension) => extension.inputRules)
       .map((extension) =>
         extension.inputRules({
+          // @ts-expect-error TODO
           type: schema[`${extension.type}s`][extension.name],
           schema,
         })
@@ -176,13 +224,14 @@ export default class ExtensionManager {
       .filter((extension) => extension.commands)
       .reduce((allCommands, extension) => {
         const { name, type } = extension;
-        const commands = {};
+        const commands: Record<string, CommandFactory> = {};
 
         // @ts-expect-error FIXME
         const value = extension.commands({
           schema,
           ...(["node", "mark"].includes(type)
             ? {
+                // @ts-expect-error TODO
                 type: schema[`${type}s`][name],
               }
             : {}),
@@ -190,30 +239,32 @@ export default class ExtensionManager {
 
         const apply = (
           callback: CommandFactory,
-          attrs: Record<string, any>
+          attrs: Record<string, Primitive>
         ) => {
-          if (!view.editable) {
-            return false;
+          if (!view.editable && !extension.allowInReadOnly) {
+            return;
           }
-          view.focus();
-          return callback(attrs)(view.state, view.dispatch, view);
+          if (extension.focusAfterExecution) {
+            view.focus();
+          }
+          return callback(attrs)?.(view.state, view.dispatch, view);
         };
 
         const handle = (_name: string, _value: CommandFactory) => {
-          if (Array.isArray(_value)) {
-            commands[_name] = (attrs: Record<string, any>) =>
-              _value.forEach((callback) => apply(callback, attrs));
-          } else if (typeof _value === "function") {
-            commands[_name] = (attrs: Record<string, any>) =>
-              apply(_value, attrs);
-          }
+          const values: CommandFactory[] = Array.isArray(_value)
+            ? _value
+            : [_value];
+
+          // @ts-expect-error FIXME
+          commands[_name] = (attrs: Record<string, Primitive>) =>
+            values.forEach((callback) => apply(callback, attrs));
         };
 
         if (typeof value === "object") {
           Object.entries(value).forEach(([commandName, commandValue]) => {
             handle(commandName, commandValue);
           });
-        } else {
+        } else if (value) {
           handle(name, value);
         }
 

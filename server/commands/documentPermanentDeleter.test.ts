@@ -1,10 +1,12 @@
 import { subDays } from "date-fns";
 import { Attachment, Document } from "@server/models";
+import DeleteAttachmentTask from "@server/queues/tasks/DeleteAttachmentTask";
 import { buildAttachment, buildDocument } from "@server/test/factories";
-import { setupTestDatabase } from "@server/test/support";
 import documentPermanentDeleter from "./documentPermanentDeleter";
 
-setupTestDatabase();
+jest.mock("@server/queues/tasks/DeleteAttachmentTask", () => ({
+  schedule: jest.fn(),
+}));
 
 describe("documentPermanentDeleter", () => {
   it("should destroy documents", async () => {
@@ -16,6 +18,9 @@ describe("documentPermanentDeleter", () => {
     expect(countDeletedDoc).toEqual(1);
     expect(
       await Document.unscoped().count({
+        where: {
+          teamId: document.teamId,
+        },
         paranoid: false,
       })
     ).toEqual(0);
@@ -47,13 +52,20 @@ describe("documentPermanentDeleter", () => {
       teamId: document.teamId,
       documentId: document.id,
     });
+    await buildAttachment({
+      teamId: document.teamId,
+      documentId: document.id,
+    });
     document.text = `![text](${attachment.redirectUrl})`;
     await document.save();
     const countDeletedDoc = await documentPermanentDeleter([document]);
     expect(countDeletedDoc).toEqual(1);
-    expect(await Attachment.count()).toEqual(0);
+    expect(DeleteAttachmentTask.schedule).toHaveBeenCalledTimes(2);
     expect(
       await Document.unscoped().count({
+        where: {
+          teamId: document.teamId,
+        },
         paranoid: false,
       })
     ).toEqual(0);
@@ -78,9 +90,18 @@ describe("documentPermanentDeleter", () => {
     });
     const countDeletedDoc = await documentPermanentDeleter([document]);
     expect(countDeletedDoc).toEqual(1);
-    expect(await Attachment.count()).toEqual(0);
+    expect(
+      await Attachment.count({
+        where: {
+          teamId: document.teamId,
+        },
+      })
+    ).toEqual(0);
     expect(
       await Document.unscoped().count({
+        where: {
+          teamId: document.teamId,
+        },
         paranoid: false,
       })
     ).toEqual(0);
@@ -101,12 +122,27 @@ describe("documentPermanentDeleter", () => {
     await document1.save();
     document.text = `![text](${attachment.redirectUrl})`;
     await document.save();
-    expect(await Attachment.count()).toEqual(1);
+    expect(
+      await Attachment.count({
+        where: {
+          teamId: document.teamId,
+        },
+      })
+    ).toEqual(1);
     const countDeletedDoc = await documentPermanentDeleter([document]);
     expect(countDeletedDoc).toEqual(1);
-    expect(await Attachment.count()).toEqual(1);
+    expect(
+      await Attachment.count({
+        where: {
+          teamId: document.teamId,
+        },
+      })
+    ).toEqual(1);
     expect(
       await Document.unscoped().count({
+        where: {
+          teamId: document.teamId,
+        },
         paranoid: false,
       })
     ).toEqual(1);

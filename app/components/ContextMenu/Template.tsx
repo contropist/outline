@@ -6,10 +6,11 @@ import {
   useMenuState,
   MenuButton,
   MenuItem as BaseMenuItem,
+  MenuStateReturn,
 } from "reakit/Menu";
 import styled, { useTheme } from "styled-components";
+import MenuIconWrapper from "~/components/ContextMenu/MenuIconWrapper";
 import Flex from "~/components/Flex";
-import MenuIconWrapper from "~/components/MenuIconWrapper";
 import { actionToMenuItem } from "~/actions";
 import useActionContext from "~/hooks/useActionContext";
 import {
@@ -19,16 +20,18 @@ import {
   MenuHeading,
   MenuItem as TMenuItem,
 } from "~/types";
+import Tooltip from "../Tooltip";
 import Header from "./Header";
 import MenuItem, { MenuAnchor } from "./MenuItem";
 import MouseSafeArea from "./MouseSafeArea";
 import Separator from "./Separator";
 import ContextMenu from ".";
 
-type Props = {
+type Props = Omit<MenuStateReturn, "items"> & {
   actions?: (Action | MenuSeparator | MenuHeading)[];
   context?: Partial<ActionContext>;
   items?: TMenuItem[];
+  showIcons?: boolean;
 };
 
 const Disclosure = styled(ExpandedIcon)`
@@ -37,36 +40,41 @@ const Disclosure = styled(ExpandedIcon)`
   right: 8px;
 `;
 
-const Submenu = React.forwardRef(
-  (
-    {
-      templateItems,
-      title,
-      ...rest
-    }: { templateItems: TMenuItem[]; title: React.ReactNode },
-    ref: React.LegacyRef<HTMLButtonElement>
-  ) => {
-    const { t } = useTranslation();
-    const theme = useTheme();
-    const menu = useMenuState();
+type SubMenuProps = MenuStateReturn & {
+  templateItems: TMenuItem[];
+  parentMenuState: Omit<MenuStateReturn, "items">;
+  title: React.ReactNode;
+};
 
-    return (
-      <>
-        <MenuButton ref={ref} {...menu} {...rest}>
-          {(props) => (
-            <MenuAnchor disclosure {...props}>
-              {title} <Disclosure color={theme.textTertiary} />
-            </MenuAnchor>
-          )}
-        </MenuButton>
-        <ContextMenu {...menu} aria-label={t("Submenu")}>
-          <MouseSafeArea parentRef={menu.unstable_popoverRef} />
-          <Template {...menu} items={templateItems} />
-        </ContextMenu>
-      </>
-    );
-  }
-);
+const SubMenu = React.forwardRef(function _Template(
+  { templateItems, title, parentMenuState, ...rest }: SubMenuProps,
+  ref: React.LegacyRef<HTMLButtonElement>
+) {
+  const { t } = useTranslation();
+  const theme = useTheme();
+  const menu = useMenuState();
+
+  return (
+    <>
+      <MenuButton ref={ref} {...menu} {...rest}>
+        {(props) => (
+          <MenuAnchor disclosure {...props}>
+            {title} <Disclosure color={theme.textTertiary} />
+          </MenuAnchor>
+        )}
+      </MenuButton>
+      <ContextMenu
+        {...menu}
+        aria-label={t("Submenu")}
+        onClick={parentMenuState.hide}
+        parentMenuState={parentMenuState}
+      >
+        <MouseSafeArea parentRef={menu.unstable_popoverRef} />
+        <Template {...menu} items={templateItems} />
+      </ContextMenu>
+    </>
+  );
+});
 
 export function filterTemplateItems(items: TMenuItem[]): TMenuItem[] {
   return items
@@ -92,7 +100,7 @@ export function filterTemplateItems(items: TMenuItem[]): TMenuItem[] {
     });
 }
 
-function Template({ items, actions, context, ...menu }: Props) {
+function Template({ items, actions, context, showIcons, ...menu }: Props) {
   const ctx = useActionContext({
     isContextMenu: true,
   });
@@ -118,20 +126,22 @@ function Template({ items, actions, context, ...menu }: Props) {
         if (
           iconIsPresentInAnyMenuItem &&
           item.type !== "separator" &&
-          item.type !== "heading"
+          item.type !== "heading" &&
+          showIcons !== false
         ) {
-          item.icon = item.icon || <MenuIconWrapper />;
+          item.icon = item.icon || <MenuIconWrapper aria-hidden />;
         }
 
         if (item.type === "route") {
           return (
             <MenuItem
               as={Link}
+              id={`${item.title}-${index}`}
               to={item.to}
               key={index}
               disabled={item.disabled}
               selected={item.selected}
-              icon={item.icon}
+              icon={showIcons !== false ? item.icon : undefined}
               {...menu}
             >
               {item.title}
@@ -142,13 +152,14 @@ function Template({ items, actions, context, ...menu }: Props) {
         if (item.type === "link") {
           return (
             <MenuItem
+              id={`${item.title}-${index}`}
               href={item.href}
               key={index}
               disabled={item.disabled}
               selected={item.selected}
               level={item.level}
               target={item.href.startsWith("#") ? undefined : "_blank"}
-              icon={item.icon}
+              icon={showIcons !== false ? item.icon : undefined}
               {...menu}
             >
               {item.title}
@@ -157,19 +168,28 @@ function Template({ items, actions, context, ...menu }: Props) {
         }
 
         if (item.type === "button") {
-          return (
+          const menuItem = (
             <MenuItem
               as="button"
+              id={`${item.title}-${index}`}
               onClick={item.onClick}
               disabled={item.disabled}
               selected={item.selected}
               dangerous={item.dangerous}
               key={index}
-              icon={item.icon}
+              icon={showIcons !== false ? item.icon : undefined}
               {...menu}
             >
               {item.title}
             </MenuItem>
+          );
+
+          return item.tooltip ? (
+            <Tooltip content={item.tooltip} placement={"bottom"}>
+              <div>{menuItem}</div>
+            </Tooltip>
+          ) : (
+            <>{menuItem}</>
           );
         }
 
@@ -177,9 +197,16 @@ function Template({ items, actions, context, ...menu }: Props) {
           return (
             <BaseMenuItem
               key={index}
-              as={Submenu}
+              as={SubMenu}
+              id={`${item.title}-${index}`}
               templateItems={item.items}
-              title={<Title title={item.title} icon={item.icon} />}
+              parentMenuState={menu}
+              title={
+                <Title
+                  title={item.title}
+                  icon={showIcons !== false ? item.icon : undefined}
+                />
+              }
               {...menu}
             />
           );
@@ -190,7 +217,7 @@ function Template({ items, actions, context, ...menu }: Props) {
         }
 
         if (item.type === "heading") {
-          return <Header>{item.title}</Header>;
+          return <Header key={index}>{item.title}</Header>;
         }
 
         const _exhaustiveCheck: never = item;
@@ -209,7 +236,7 @@ function Title({
 }) {
   return (
     <Flex align="center">
-      {icon && <MenuIconWrapper>{icon}</MenuIconWrapper>}
+      {icon && <MenuIconWrapper aria-hidden>{icon}</MenuIconWrapper>}
       {title}
     </Flex>
   );
