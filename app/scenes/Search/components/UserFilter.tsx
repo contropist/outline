@@ -3,31 +3,29 @@ import { UserIcon } from "outline-icons";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import styled from "styled-components";
-import Avatar from "~/components/Avatar";
+import { Avatar, AvatarSize } from "~/components/Avatar";
 import FilterOptions from "~/components/FilterOptions";
 import useStores from "~/hooks/useStores";
 
 type Props = {
+  /** The currently selected user ID */
   userId: string | undefined;
+  /** Callback to call when a user is selected */
   onSelect: (key: string | undefined) => void;
 };
+
+const fetchQueryOptions = { sort: "name", direction: "ASC" };
 
 function UserFilter(props: Props) {
   const { onSelect, userId } = props;
   const { t } = useTranslation();
   const { users } = useStores();
 
-  React.useEffect(() => {
-    users.fetchPage({
-      limit: 100,
-    });
-  }, [users]);
-
   const options = React.useMemo(() => {
     const userOptions = users.all.map((user) => ({
       key: user.id,
       label: user.name,
-      icon: <Avatar model={user} showBorder={false} size={18} />,
+      icon: <Avatar model={user} size={AvatarSize.Small} />,
     }));
     return [
       {
@@ -42,10 +40,13 @@ function UserFilter(props: Props) {
   return (
     <FilterOptions
       options={options}
-      activeKey={userId}
+      selectedKeys={[userId]}
       onSelect={onSelect}
       defaultLabel={t("Any author")}
       selectedPrefix={`${t("Author")}:`}
+      fetchQuery={users.fetchPage}
+      fetchQueryOptions={fetchQueryOptions}
+      showFilter
     />
   );
 }

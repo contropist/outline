@@ -3,11 +3,11 @@ import Desktop from "~/utils/Desktop";
 
 export const useDesktopTitlebar = () => {
   React.useEffect(() => {
-    if (!Desktop.isElectron()) {
+    if (!Desktop.bridge) {
       return;
     }
 
-    const handleDoubleClick = (event: MouseEvent) => {
+    const handleDoubleClick = async (event: MouseEvent) => {
       // Ignore double clicks on interactive elements such as inputs and buttons
       if (event.composedPath().some(elementIsInteractive)) {
         return;
@@ -19,7 +19,7 @@ export const useDesktopTitlebar = () => {
       }
 
       event.preventDefault();
-      Desktop.bridge.onTitlebarDoubleClick();
+      await Desktop.bridge?.onTitlebarDoubleClick();
     };
 
     window.addEventListener("dblclick", handleDoubleClick);

@@ -9,11 +9,6 @@ declare module "styled-components" {
     text: string;
     cursor: string;
     divider: string;
-    toolbarBackground: string;
-    toolbarHoverBackground: string;
-    toolbarInput: string;
-    toolbarItem: string;
-    tableDivider: string;
     tableSelected: string;
     tableSelectedBackground: string;
     quote: string;
@@ -24,7 +19,10 @@ declare module "styled-components" {
     scrollbarThumb: string;
     fontFamily: string;
     fontFamilyMono: string;
-    fontWeight: number;
+    fontFamilyEmoji: string;
+    fontWeightRegular: number;
+    fontWeightMedium: number;
+    fontWeightBold: number;
     link: string;
     placeholder: string;
     textSecondary: string;
@@ -38,6 +36,7 @@ declare module "styled-components" {
     codeProperty: string;
     codeTag: string;
     codeString: string;
+    codeClassName: string;
     codeSelector: string;
     codeAttr: string;
     codeEntity: string;
@@ -53,6 +52,8 @@ declare module "styled-components" {
     noticeTipText: string;
     noticeWarningBackground: string;
     noticeWarningText: string;
+    noticeSuccessBackground: string;
+    noticeSuccessText: string;
   }
 
   interface Colors {
@@ -68,6 +69,7 @@ declare module "styled-components" {
     smokeLight: string;
     smokeDark: string;
     white: string;
+    white05: string;
     white10: string;
     white50: string;
     white75: string;
@@ -75,10 +77,10 @@ declare module "styled-components" {
     black05: string;
     black10: string;
     black50: string;
-    primary: string;
+    black75: string;
+    accent: string;
     yellow: string;
     warmGrey: string;
-    searchHighlight: string;
     danger: string;
     warning: string;
     success: string;
@@ -89,27 +91,41 @@ declare module "styled-components" {
       purple: string;
       blue: string;
       marine: string;
+      dusk: string;
       green: string;
       yellow: string;
     };
   }
 
+  interface Breakpoints {
+    breakpoints: {
+      mobile: number;
+      mobileLarge: number;
+      tablet: number;
+      desktop: number;
+      desktopLarge: number;
+    };
+  }
+
   interface Spacing {
-    padding: string;
-    vpadding: string;
-    hpadding: string;
     sidebarWidth: number;
+    sidebarRightWidth: number;
     sidebarCollapsedWidth: number;
     sidebarMinWidth: number;
     sidebarMaxWidth: number;
   }
 
-  export interface DefaultTheme extends Colors, Spacing, EditorTheme {
+  export interface DefaultTheme
+    extends Colors,
+      Spacing,
+      Breakpoints,
+      EditorTheme {
     background: string;
-    backgroundTransition: string;
-    buttonBackground: string;
-    buttonText: string;
-    secondaryBackground: string;
+    backgroundSecondary: string;
+    backgroundTertiary: string;
+    backgroundQuaternary: string;
+    accent: string;
+    accentText: string;
     link: string;
     text: string;
     cursor: string;
@@ -120,6 +136,7 @@ declare module "styled-components" {
     textDiffDeleted: string;
     textDiffDeletedBackground: string;
     placeholder: string;
+    commentMarkBackground: string;
     sidebarBackground: string;
     sidebarActiveBackground: string;
     sidebarControlHoverBackground: string;
@@ -139,6 +156,8 @@ declare module "styled-components" {
     inputBorder: string;
     inputBorderFocused: string;
     listItemHoverBackground: string;
+    mentionBackground: string;
+    mentionHoverBackground: string;
     buttonNeutralBackground: string;
     buttonNeutralText: string;
     buttonNeutralBorder: string;

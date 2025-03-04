@@ -1,6 +1,20 @@
+import type RootStore from "~/stores/RootStore";
+
 declare global {
+  interface ImportMeta {
+    /**
+     * A special feature that allows you to get all matching modules starting from some base directory.
+     */
+    glob: (pattern: string, option?: { eager: boolean }) => any;
+  }
+
   interface Window {
-    DesktopBridge: {
+    dataLayer: any[];
+    gtag: (...args: any[]) => void;
+
+    stores: RootStore;
+
+    DesktopBridge?: {
       /**
        * The name of the platform running on.
        */
@@ -47,6 +61,11 @@ declare global {
       setSpellCheckerLanguages: (languages: string[]) => Promise<void>;
 
       /**
+       * Set the badge on the app icon.
+       */
+      setNotificationCount: (count: number) => Promise<void>;
+
+      /**
        * Registers a callback to be called when the window is focused.
        */
       focus: (callback: () => void) => void;
@@ -81,6 +100,16 @@ declare global {
        * Go forward in history, if possible
        */
       goForward: () => void;
+
+      /**
+       * Registers a callback to be called when the application wants to open the find in page dialog.
+       */
+      onFindInPage: (callback: () => void) => void;
+
+      /**
+       * Registers a callback to be called when the application wants to open the replace in page dialog.
+       */
+      onReplaceInPage: (callback: () => void) => void;
     };
   }
 }

@@ -6,14 +6,17 @@ import {
   NodeType,
   Schema,
 } from "prosemirror-model";
-import { Plugin, Selection } from "prosemirror-state";
+import { Command, Plugin, Selection } from "prosemirror-state";
 import { Decoration, DecorationSet } from "prosemirror-view";
+import { toast } from "sonner";
+import { Primitive } from "utility-types";
+import Storage from "../../utils/Storage";
 import backspaceToParagraph from "../commands/backspaceToParagraph";
 import splitHeading from "../commands/splitHeading";
 import toggleBlockType from "../commands/toggleBlockType";
-import { Command } from "../lib/Extension";
 import headingToSlug, { headingToPersistenceKey } from "../lib/headingToSlug";
 import { MarkdownSerializerState } from "../lib/markdown/serializer";
+import { findCollapsedNodes } from "../queries/findCollapsedNodes";
 import Node from "./Node";
 
 export default class Heading extends Node {
@@ -35,6 +38,7 @@ export default class Heading extends Node {
       attrs: {
         level: {
           default: 1,
+          validate: "number",
         },
         collapsed: {
           default: undefined,
@@ -47,7 +51,8 @@ export default class Heading extends Node {
       parseDOM: this.options.levels.map((level: number) => ({
         tag: `h${level}`,
         attrs: { level },
-        contentElement: ".heading-content",
+        contentElement: (node: HTMLHeadingElement) =>
+          node.querySelector(".heading-content") || node,
       })),
       toDOM: (node) => {
         let anchor, fold;
@@ -56,9 +61,7 @@ export default class Heading extends Node {
           anchor.innerText = "#";
           anchor.type = "button";
           anchor.className = "heading-anchor";
-          anchor.addEventListener("click", (event) =>
-            this.handleCopyLink(event)
-          );
+          anchor.addEventListener("click", this.handleCopyLink);
 
           fold = document.createElement("button");
           fold.innerText = "";
@@ -75,6 +78,9 @@ export default class Heading extends Node {
 
         return [
           `h${node.attrs.level + (this.options.offset || 0)}`,
+          {
+            dir: "auto",
+          },
           [
             "span",
             {
@@ -113,14 +119,16 @@ export default class Heading extends Node {
   }
 
   commands({ type, schema }: { type: NodeType; schema: Schema }) {
-    return (attrs: Record<string, any>) => {
-      return toggleBlockType(type, schema.nodes.paragraph, attrs);
-    };
+    return (attrs: Record<string, Primitive>) =>
+      toggleBlockType(type, schema.nodes.paragraph, attrs);
   }
 
   handleFoldContent = (event: MouseEvent) => {
     event.preventDefault();
-    if (!(event.currentTarget instanceof HTMLButtonElement)) {
+    if (
+      !(event.currentTarget instanceof HTMLButtonElement) ||
+      event.button !== 0
+    ) {
       return;
     }
 
@@ -151,9 +159,9 @@ export default class Heading extends Node {
         const persistKey = headingToPersistenceKey(node, this.editor.props.id);
 
         if (collapsed) {
-          localStorage?.setItem(persistKey, "collapsed");
+          Storage.set(persistKey, "collapsed");
         } else {
-          localStorage?.removeItem(persistKey);
+          Storage.remove(persistKey);
         }
 
         view.dispatch(transaction);
@@ -180,10 +188,12 @@ export default class Heading extends Node {
 
     // the existing url might contain a hash already, lets make sure to remove
     // that rather than appending another one.
-    const urlWithoutHash = window.location.href.split("#")[0];
-    copy(urlWithoutHash + hash);
+    const normalizedUrl = window.location.href
+      .split("#")[0]
+      .replace("/edit", "");
+    copy(normalizedUrl + hash);
 
-    this.options.onShowToast(this.options.dictionary.linkCopied);
+    toast.message(this.options.dictionary.linkCopied);
   };
 
   keys({ type, schema }: { type: NodeType; schema: Schema }) {
@@ -211,7 +221,7 @@ export default class Heading extends Node {
   get plugins() {
     const getAnchors = (doc: ProsemirrorNode) => {
       const decorations: Decoration[] = [];
-      const previouslySeen = {};
+      const previouslySeen: Record<string, number> = {};
 
       doc.descendants((node, pos) => {
         if (node.type.name !== this.name) {
@@ -255,19 +265,32 @@ export default class Heading extends Node {
 
     const plugin: Plugin = new Plugin({
       state: {
-        init: (config, state) => {
-          return getAnchors(state.doc);
-        },
-        apply: (tr, oldState) => {
-          return tr.docChanged ? getAnchors(tr.doc) : oldState;
-        },
+        init: (config, state) => getAnchors(state.doc),
+        apply: (tr, oldState) =>
+          tr.docChanged ? getAnchors(tr.doc) : oldState,
       },
       props: {
         decorations: (state) => plugin.getState(state),
       },
     });
 
-    return [plugin];
+    const foldPlugin: Plugin = new Plugin({
+      props: {
+        decorations: (state) => {
+          const { doc } = state;
+          const decorations: Decoration[] = findCollapsedNodes(doc).map(
+            (block) =>
+              Decoration.node(block.pos, block.pos + block.node.nodeSize, {
+                class: "folded-content",
+              })
+          );
+
+          return DecorationSet.create(doc, decorations);
+        },
+      },
+    });
+
+    return [foldPlugin, plugin];
   }
 
   inputRules({ type }: { type: NodeType }) {

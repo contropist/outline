@@ -1,4 +1,9 @@
-import { FindOptions, Op } from "sequelize";
+import {
+  InferAttributes,
+  InferCreationAttributes,
+  Op,
+  SaveOptions,
+} from "sequelize";
 import {
   DataType,
   BelongsTo,
@@ -9,15 +14,14 @@ import {
   IsNumeric,
   Length as SimpleLength,
 } from "sequelize-typescript";
-import MarkdownSerializer from "slate-md-serializer";
-import { DocumentValidation } from "@shared/validations";
+import type { ProsemirrorData } from "@shared/types";
+import { DocumentValidation, RevisionValidation } from "@shared/validations";
 import Document from "./Document";
 import User from "./User";
 import IdModel from "./base/IdModel";
 import Fix from "./decorators/Fix";
+import IsHexColor from "./validators/IsHexColor";
 import Length from "./validators/Length";
-
-const serializer = new MarkdownSerializer();
 
 @DefaultScope(() => ({
   include: [
@@ -30,11 +34,15 @@ const serializer = new MarkdownSerializer();
 }))
 @Table({ tableName: "revisions", modelName: "revision" })
 @Fix
-class Revision extends IdModel {
+class Revision extends IdModel<
+  InferAttributes<Revision>,
+  Partial<InferCreationAttributes<Revision>>
+> {
   @IsNumeric
   @Column(DataType.SMALLINT)
-  version: number;
+  version?: number | null;
 
+  /** The editor version at the time of the revision */
   @SimpleLength({
     max: 255,
     msg: `editorVersion must be 255 characters or less`,
@@ -42,6 +50,7 @@ class Revision extends IdModel {
   @Column
   editorVersion: string;
 
+  /** The document title at the time of the revision */
   @Length({
     max: DocumentValidation.maxTitleLength,
     msg: `Revision title must be ${DocumentValidation.maxTitleLength} characters or less`,
@@ -49,8 +58,40 @@ class Revision extends IdModel {
   @Column
   title: string;
 
+  /** An optional name for the revision */
+  @Length({
+    max: RevisionValidation.maxNameLength,
+    msg: `Revision name must be ${RevisionValidation.maxNameLength} characters or less`,
+  })
+  @Column
+  name: string | null;
+
+  /**
+   * The content of the revision as Markdown.
+   *
+   * @deprecated Use `content` instead, or `DocumentHelper.toMarkdown` if
+   * exporting lossy markdown. This column will be removed in a future migration
+   * and is no longer being written.
+   */
   @Column(DataType.TEXT)
   text: string;
+
+  /** The content of the revision as JSON. */
+  @Column(DataType.JSONB)
+  content: ProsemirrorData | null;
+
+  /** The icon at the time of the revision. */
+  @Length({
+    max: 50,
+    msg: `icon must be 50 characters or less`,
+  })
+  @Column
+  icon: string | null;
+
+  /** The color at the time of the revision. */
+  @IsHexColor
+  @Column
+  color: string | null;
 
   // associations
 
@@ -68,6 +109,14 @@ class Revision extends IdModel {
   @Column(DataType.UUID)
   userId: string;
 
+  // static methods
+
+  /**
+   * Find the latest revision for a given document
+   *
+   * @param documentId The document id to find the latest revision for
+   * @returns A Promise that resolves to a Revision model
+   */
   static findLatest(documentId: string) {
     return this.findOne({
       where: {
@@ -77,29 +126,51 @@ class Revision extends IdModel {
     });
   }
 
+  /**
+   * Build a Revision model from a Document model
+   *
+   * @param document The document to build from
+   * @returns A Revision model
+   */
+  static buildFromDocument(document: Document) {
+    return this.build({
+      title: document.title,
+      icon: document.icon,
+      color: document.color,
+      content: document.content,
+      userId: document.lastModifiedById,
+      editorVersion: document.editorVersion,
+      version: document.version,
+      documentId: document.id,
+      // revision time is set to the last time document was touched as this
+      // handler can be debounced in the case of an update
+      createdAt: document.updatedAt,
+    });
+  }
+
+  /**
+   * Create a Revision model from a Document model and save it to the database
+   *
+   * @param document The document to create from
+   * @param options Options passed to the save method
+   * @returns A Promise that resolves when saved
+   */
   static createFromDocument(
     document: Document,
-    options?: FindOptions<Revision>
+    options?: SaveOptions<InferAttributes<Revision>>
   ) {
-    return this.create(
-      {
-        title: document.title,
-        text: document.text,
-        userId: document.lastModifiedById,
-        editorVersion: document.editorVersion,
-        version: document.version,
-        documentId: document.id,
-        // revision time is set to the last time document was touched as this
-        // handler can be debounced in the case of an update
-        createdAt: document.updatedAt,
-      },
-      options
-    );
+    const revision = this.buildFromDocument(document);
+    return revision.save(options);
   }
 
   // instance methods
 
-  previous(): Promise<Revision | null> {
+  /**
+   * Find the revision for the document before this one.
+   *
+   * @returns A Promise that resolves to a Revision, or null if this is the first revision.
+   */
+  before(): Promise<Revision | null> {
     return (this.constructor as typeof Revision).findOne({
       where: {
         documentId: this.documentId,
@@ -110,35 +181,6 @@ class Revision extends IdModel {
       order: [["createdAt", "DESC"]],
     });
   }
-
-  migrateVersion = function () {
-    let migrated = false;
-
-    // migrate from document version 0 -> 1
-    if (!this.version) {
-      // removing the title from the document text attribute
-      this.text = this.text.replace(/^#\s(.*)\n/, "");
-      this.version = 1;
-      migrated = true;
-    }
-
-    // migrate from document version 1 -> 2
-    if (this.version === 1) {
-      const nodes = serializer.deserialize(this.text);
-      this.text = serializer.serialize(nodes, {
-        version: 2,
-      });
-      this.version = 2;
-      migrated = true;
-    }
-
-    if (migrated) {
-      return this.save({
-        silent: true,
-        hooks: false,
-      });
-    }
-  };
 }
 
 export default Revision;

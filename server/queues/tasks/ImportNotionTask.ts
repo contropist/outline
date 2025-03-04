@@ -1,44 +1,85 @@
 import path from "path";
-import JSZip from "jszip";
-import { compact, escapeRegExp } from "lodash";
+import fs from "fs-extra";
+import compact from "lodash/compact";
+import escapeRegExp from "lodash/escapeRegExp";
 import mime from "mime-types";
 import { v4 as uuidv4 } from "uuid";
 import documentImporter from "@server/commands/documentImporter";
+import { createContext } from "@server/context";
 import Logger from "@server/logging/Logger";
 import { FileOperation, User } from "@server/models";
-import { zipAsFileTree, FileTreeNode } from "@server/utils/zip";
+import { sequelize } from "@server/storage/database";
+import ImportHelper, { FileTreeNode } from "@server/utils/ImportHelper";
 import ImportTask, { StructuredImportData } from "./ImportTask";
 
 export default class ImportNotionTask extends ImportTask {
   public async parseData(
-    buffer: Buffer,
+    dirPath: string,
     fileOperation: FileOperation
   ): Promise<StructuredImportData> {
-    const zip = await JSZip.loadAsync(buffer);
-    const tree = zipAsFileTree(zip);
-    return this.parseFileTree({ fileOperation, zip, tree });
+    const tree = await ImportHelper.toFileTree(dirPath);
+    if (!tree) {
+      throw new Error("Could not find valid content in zip file");
+    }
+
+    // New Notion exports have a single folder with the name of the export, we must skip this
+    // folder and go directly to the children.
+    let parsed;
+    if (
+      tree.children.length === 1 &&
+      tree.children[0].children.find((child) => child.title === "index")
+    ) {
+      parsed = await this.parseFileTree(
+        fileOperation,
+        tree.children[0].children.filter((child) => child.title !== "index")
+      );
+    } else {
+      parsed = await this.parseFileTree(fileOperation, tree.children);
+    }
+
+    if (parsed.documents.length === 0 && parsed.collections.length === 1) {
+      const collection = parsed.collections[0];
+      const collectionId = uuidv4();
+      if (collection.description) {
+        parsed.documents.push({
+          title: collection.name,
+          icon: collection.icon,
+          color: collection.color,
+          path: "",
+          text: String(collection.description),
+          id: collection.id,
+          externalId: collection.externalId,
+          mimeType: "text/html",
+          collectionId,
+        });
+      }
+
+      collection.name = "Notion";
+      collection.icon = undefined;
+      collection.color = undefined;
+      collection.externalId = undefined;
+      collection.description = undefined;
+      collection.id = collectionId;
+    }
+
+    return parsed;
   }
 
   /**
    * Converts the file structure from zipAsFileTree into documents,
    * collections, and attachments.
    *
+   * @param fileOperation The file operation
    * @param tree An array of FileTreeNode representing root files in the zip
    * @returns A StructuredImportData object
    */
-  private async parseFileTree({
-    zip,
-    tree,
-    fileOperation,
-  }: {
-    zip: JSZip;
-    fileOperation: FileOperation;
-    tree: FileTreeNode[];
-  }): Promise<StructuredImportData> {
-    const user = await User.findByPk(fileOperation.userId);
-    if (!user) {
-      throw new Error("User not found");
-    }
+  private async parseFileTree(
+    fileOperation: FileOperation,
+    tree: FileTreeNode[]
+  ): Promise<StructuredImportData> {
+    const user = await User.findByPk(fileOperation.userId, {
+      rejectOnEmpty: true,
+    });
 
     const output: StructuredImportData = {
       collections: [],
@@ -51,10 +92,6 @@ export default class ImportNotionTask extends ImportTask {
       collectionId: string,
       parentDocumentId?: string
     ): Promise<void> => {
-      if (!user) {
-        throw new Error("User not found");
-      }
-
       await Promise.all(
         children.map(async (child) => {
           // Ignore the CSV's for databases upfront
@@ -62,11 +99,10 @@ export default class ImportNotionTask extends ImportTask {
             return;
           }
 
-          const zipObject = zip.files[child.path];
           const id = uuidv4();
           const match = child.title.match(this.NotionUUIDRegex);
           const name = child.title.replace(this.NotionUUIDRegex, "");
-          const sourceId = match ? match[0].trim() : undefined;
+          const externalId = match ? match[0].trim() : undefined;
 
           // If it's not a text file we're going to treat it as an attachment.
           const mimeType = mime.lookup(child.name);
@@ -82,29 +118,35 @@ export default class ImportNotionTask extends ImportTask {
               name: child.name,
               path: child.path,
               mimeType,
-              buffer: () => zipObject.async("nodebuffer"),
-              sourceId,
+              buffer: () => fs.readFile(child.path),
+              externalId,
             });
             return;
           }
 
           Logger.debug("task", `Processing ${name} as ${mimeType}`);
 
-          const { title, text } = await documentImporter({
-            mimeType: mimeType || "text/markdown",
-            fileName: name,
-            content: await zipObject.async("string"),
-            user,
-            ip: user.lastActiveIp || undefined,
-          });
+          const { title, icon, text } = await sequelize.transaction(
+            async (transaction) =>
+              documentImporter({
+                mimeType: mimeType || "text/markdown",
+                fileName: name,
+                content:
+                  child.children.length > 0
+                    ? ""
+                    : await fs.readFile(child.path, "utf8"),
+                user,
+                ctx: createContext({ user, transaction }),
+              })
+          );
 
           const existingDocumentIndex = output.documents.findIndex(
-            (doc) => doc.sourceId === sourceId
+            (doc) => doc.externalId === externalId
           );
 
           const existingDocument = output.documents[existingDocumentIndex];
 
-          // If there is an existing document with the same sourceId that means
+          // If there is an existing document with the same externalId that means
           // we've already parsed either a folder or a file referencing the same
           // document, as such we should merge.
           if (existingDocument) {
@@ -121,11 +163,13 @@ export default class ImportNotionTask extends ImportTask {
             output.documents.push({
               id,
               title,
+              icon,
               text,
               collectionId,
               parentDocumentId,
               path: child.path,
-              sourceId,
+              mimeType: mimeType || "text/markdown",
+              externalId,
             });
             await parseNodeChildren(child.children, collectionId, id);
           }
@@ -171,13 +215,13 @@ export default class ImportNotionTask extends ImportTask {
       // instead of a relative or absolute URL within the original zip file.
       for (const link of internalLinksInText) {
         const doc = output.documents.find(
-          (doc) => doc.sourceId === link.sourceId
+          (doc) => doc.externalId === link.externalId
         );
 
         if (!doc) {
           Logger.info(
             "task",
-            `Could not find referenced document with sourceId ${link.sourceId}`
+            `Could not find referenced document with externalId ${link.externalId}`
           );
         } else {
           text = text.replace(link.href, `<<${doc.id}>>`);
@@ -191,11 +235,11 @@ export default class ImportNotionTask extends ImportTask {
     for (const node of tree) {
       const match = node.title.match(this.NotionUUIDRegex);
       const name = node.title.replace(this.NotionUUIDRegex, "");
-      const sourceId = match ? match[0].trim() : undefined;
+      const externalId = match ? match[0].trim() : undefined;
       const mimeType = mime.lookup(node.name);
 
       const existingCollectionIndex = output.collections.findIndex(
-        (collection) => collection.sourceId === sourceId
+        (collection) => collection.externalId === externalId
       );
       const existingCollection = output.collections[existingCollectionIndex];
       const collectionId = existingCollection?.id || uuidv4();
@@ -207,14 +251,15 @@ export default class ImportNotionTask extends ImportTask {
         mimeType === "text/plain" ||
         mimeType === "text/html"
       ) {
-        const zipObject = zip.files[node.path];
-        const { text } = await documentImporter({
-          mimeType,
-          fileName: name,
-          content: await zipObject.async("string"),
-          user,
-          ip: user.lastActiveIp || undefined,
-        });
+        const { text } = await sequelize.transaction(async (transaction) =>
+          documentImporter({
+            mimeType,
+            fileName: name,
+            content: await fs.readFile(node.path, "utf8"),
+            user,
+            ctx: createContext({ user, transaction }),
+          })
+        );
 
         description = text;
       } else if (node.children.length > 0) {
@@ -235,7 +280,7 @@ export default class ImportNotionTask extends ImportTask {
           id: collectionId,
           name,
           description,
-          sourceId,
+          externalId,
         });
       }
     }
@@ -245,7 +290,7 @@ export default class ImportNotionTask extends ImportTask {
     }
 
     for (const collection of output.collections) {
-      if (collection.description) {
+      if (typeof collection.description === "string") {
         collection.description = replaceInternalLinksAndImages(
           collection.description
         );
@@ -257,19 +302,19 @@ export default class ImportNotionTask extends ImportTask {
 
   /**
    * Extracts internal links from a markdown document, taking into account the
-   * sourceId of the document, which is part of the link title.
+   * externalId of the document, which is part of the link title.
    *
    * @param text The markdown text to parse
    * @returns An array of internal links
    */
   private parseInternalLinks(
     text: string
-  ): { title: string; href: string; sourceId: string }[] {
+  ): { title: string; href: string; externalId: string }[] {
     return compact(
       [...text.matchAll(this.NotionLinkRegex)].map((match) => ({
         title: match[1],
         href: match[2],
-        sourceId: match[3],
+        externalId: match[3],
       }))
     );
   }
@@ -292,16 +337,18 @@ export default class ImportNotionTask extends ImportTask {
   /**
    * Regex to find markdown images of all types
    */
-  private ImageRegex = /!\[(?<alt>[^\][]*?)]\((?<filename>[^\][]*?)(?=“|\))“?(?<title>[^\][”]+)?”?\)/g;
+  private ImageRegex =
+    /!\[(?<alt>[^\][]*?)]\((?<filename>[^\][]*?)(?=“|\))“?(?<title>[^\][”]+)?”?\)/g;
 
   /**
    * Regex to find markdown links containing ID's that look like UUID's with the
-   * "-"'s removed, Notion's sourceId format.
+   * "-"'s removed, Notion's externalId format.
    */
   private NotionLinkRegex = /\[([^[]+)]\((.*?([0-9a-fA-F]{32})\..*?)\)/g;
 
   /**
    * Regex to find Notion document UUID's in the title of a document.
    */
-  private NotionUUIDRegex = /\s([0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12}|[0-9a-fA-F]{32})$/;
+  private NotionUUIDRegex =
+    /\s([0-9a-fA-F]{8}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{4}\b-[0-9a-fA-F]{12}|[0-9a-fA-F]{32})$/;
 }

@@ -1,11 +1,14 @@
-import { sequelize } from "@server/database/sequelize";
+import { InferCreationAttributes } from "sequelize";
+import { UserRole } from "@shared/types";
 import InviteAcceptedEmail from "@server/emails/templates/InviteAcceptedEmail";
 import {
   DomainNotAllowedError,
   InvalidAuthenticationError,
   InviteRequiredError,
 } from "@server/errors";
+import Logger from "@server/logging/Logger";
 import { Event, Team, User, UserAuthentication } from "@server/models";
+import { sequelize } from "@server/storage/database";
 
 type UserProvisionerResult = {
   user: User;
@@ -18,10 +21,10 @@ type Props = {
   name: string;
   /** The email address of the user */
   email: string;
-  /** The username of the user */
-  username?: string;
-  /** Provision the new user as an administrator */
-  isAdmin?: boolean;
+  /** The language of the user, if known */
+  language?: string;
+  /** The role for new user, Member if none is provided */
+  role?: UserRole;
   /** The public url of an image representing the user */
   avatarUrl?: string | null;
   /**
@@ -50,8 +53,8 @@ type Props = {
 export default async function userProvisioner({
   name,
   email,
-  username,
-  isAdmin,
+  role,
+  language,
   avatarUrl,
   teamId,
   authentication,
@@ -60,7 +63,7 @@ export default async function userProvisioner({
   const auth = authentication
     ? await UserAuthentication.findOne({
         where: {
-          providerId: "" + authentication.providerId,
+          providerId: String(authentication.providerId),
         },
         include: [
           {
@@ -92,7 +95,6 @@ export default async function userProvisioner({
     if (user) {
       await user.update({
         email,
-        username,
       });
       await auth.update(rest);
       return {
@@ -185,12 +187,12 @@ export default async function userProvisioner({
     if (isInvite) {
       const inviter = await existingUser.$get("invitedBy");
       if (inviter) {
-        await InviteAcceptedEmail.schedule({
+        await new InviteAcceptedEmail({
           to: inviter.email,
           inviterId: inviter.id,
           invitedName: existingUser.name,
           teamUrl: existingUser.team.url,
-        });
+        }).schedule();
       }
     }
 
@@ -215,30 +217,29 @@ export default async function userProvisioner({
     // If the team settings are set to require invites, and there's no existing user record,
     // throw an error and fail user creation.
     if (team?.inviteRequired) {
+      Logger.info("authentication", "Sign in without invitation", {
+        teamId: team.id,
+        email,
+      });
       throw InviteRequiredError();
     }
 
     // If the team settings do not allow this domain,
     // throw an error and fail user creation.
-    const domain = email.split("@")[1];
-    if (team && !(await team.isDomainAllowed(domain))) {
+    if (team && !(await team.isDomainAllowed(email))) {
       throw DomainNotAllowedError();
     }
-
-    const defaultUserRole = team?.defaultUserRole;
 
     const user = await User.create(
       {
         name,
         email,
-        username,
-        isAdmin: typeof isAdmin === "boolean" && isAdmin,
-        isViewer: isAdmin === true ? false : defaultUserRole === "viewer",
+        language,
+        role: role ?? team?.defaultUserRole,
         teamId,
         avatarUrl,
-        service: null,
         authentications: authentication ? [authentication] : [],
-      },
+      } as Partial<InferCreationAttributes<User>>,
       {
         include: "authentications",
         transaction,

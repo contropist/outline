@@ -1,58 +1,73 @@
-import Koa, { BaseContext, DefaultContext, DefaultState } from "koa";
+import Koa, { BaseContext } from "koa";
 import bodyParser from "koa-body";
 import Router from "koa-router";
 import userAgent, { UserAgentContext } from "koa-useragent";
 import env from "@server/env";
 import { NotFoundError } from "@server/errors";
-import errorHandling from "@server/middlewares/errorHandling";
-import { defaultRateLimiter } from "@server/middlewares/rateLimiter";
-import { AuthenticatedState } from "@server/types";
+import coalesceBody from "@server/middlewares/coaleseBody";
+import { AppState, AppContext } from "@server/types";
+import { Hook, PluginManager } from "@server/utils/PluginManager";
 import apiKeys from "./apiKeys";
 import attachments from "./attachments";
 import auth from "./auth";
 import authenticationProviders from "./authenticationProviders";
 import collections from "./collections";
-import utils from "./cron";
+import comments from "./comments/comments";
+import cron from "./cron";
 import developer from "./developer";
 import documents from "./documents";
 import events from "./events";
 import fileOperationsRoute from "./fileOperations";
+import groupMemberships from "./groupMemberships";
 import groups from "./groups";
-import hooks from "./hooks";
+import installation from "./installation";
 import integrations from "./integrations";
-import apiWrapper from "./middlewares/apiWrapper";
+import apiErrorHandler from "./middlewares/apiErrorHandler";
+import apiResponse from "./middlewares/apiResponse";
+import apiTracer from "./middlewares/apiTracer";
 import editor from "./middlewares/editor";
-import notificationSettings from "./notificationSettings";
+import notifications from "./notifications";
 import pins from "./pins";
+import reactions from "./reactions";
 import revisions from "./revisions";
 import searches from "./searches";
 import shares from "./shares";
 import stars from "./stars";
 import subscriptions from "./subscriptions";
-import team from "./team";
+import suggestions from "./suggestions";
+import teams from "./teams";
+import urls from "./urls";
+import userMemberships from "./userMemberships";
 import users from "./users";
 import views from "./views";
-import webhookSubscriptions from "./webhookSubscriptions";
 
-const api = new Koa<
-  DefaultState & AuthenticatedState,
-  DefaultContext & { body: Record<string, any> }
->();
+const api = new Koa<AppState, AppContext>();
 const router = new Router();
 
 // middlewares
-api.use(errorHandling());
 api.use(
   bodyParser({
     multipart: true,
     formidable: {
+      maxFileSize: Math.max(
+        env.FILE_STORAGE_UPLOAD_MAX_SIZE,
+        env.FILE_STORAGE_IMPORT_MAX_SIZE
+      ),
       maxFieldsSize: 10 * 1024 * 1024,
     },
   })
 );
+api.use(coalesceBody());
 api.use<BaseContext, UserAgentContext>(userAgent);
-api.use(apiWrapper());
+api.use(apiTracer());
+api.use(apiResponse());
+api.use(apiErrorHandler());
 api.use(editor());
+
+// Register plugin API routes before others to allow for overrides
+PluginManager.getHooks(Hook.API).forEach((hook) =>
+  router.use("/", hook.value.routes())
+);
 
 // routes
 router.use("/", auth.routes());
@@ -60,26 +75,34 @@ router.use("/", authenticationProviders.routes());
 router.use("/", events.routes());
 router.use("/", users.routes());
 router.use("/", collections.routes());
+router.use("/", comments.routes());
 router.use("/", documents.routes());
 router.use("/", pins.routes());
 router.use("/", revisions.routes());
 router.use("/", views.routes());
-router.use("/", hooks.routes());
 router.use("/", apiKeys.routes());
 router.use("/", searches.routes());
 router.use("/", shares.routes());
 router.use("/", stars.routes());
 router.use("/", subscriptions.routes());
-router.use("/", team.routes());
+router.use("/", suggestions.routes());
+router.use("/", teams.routes());
 router.use("/", integrations.routes());
-router.use("/", notificationSettings.routes());
+router.use("/", notifications.routes());
 router.use("/", attachments.routes());
-router.use("/", utils.routes());
+router.use("/", cron.routes());
 router.use("/", groups.routes());
+router.use("/", groupMemberships.routes());
 router.use("/", fileOperationsRoute.routes());
-router.use("/", webhookSubscriptions.routes());
+router.use("/", urls.routes());
+router.use("/", userMemberships.routes());
+router.use("/", reactions.routes());
 
-if (env.ENVIRONMENT === "development") {
+if (!env.isCloudHosted) {
+  router.use("/", installation.routes());
+}
+
+if (env.isDevelopment) {
   router.use("/", developer.routes());
 }
 
@@ -90,8 +113,6 @@ router.post("*", (ctx) => {
 router.get("*", (ctx) => {
   ctx.throw(NotFoundError("Endpoint not found"));
 });
-
-api.use(defaultRateLimiter());
 
 // Router is embedded in a Koa application wrapper, because koa-router does not
 // allow middleware to catch any routes which were not explicitly defined.

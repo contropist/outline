@@ -10,7 +10,7 @@ import {
   match,
 } from "react-router";
 import { Link } from "react-router-dom";
-import scrollIntoView from "smooth-scroll-into-view-if-needed";
+import scrollIntoView from "scroll-into-view-if-needed";
 import history from "~/utils/history";
 
 const resolveToLocation = (
@@ -21,17 +21,15 @@ const resolveToLocation = (
 const normalizeToLocation = (
   to: LocationDescriptor,
   currentLocation: Location
-) => {
-  return typeof to === "string"
+) =>
+  typeof to === "string"
     ? createLocation(to, null, undefined, currentLocation)
     : to;
-};
 
-const joinClassnames = (...classnames: (string | undefined)[]) => {
-  return classnames.filter((i) => i).join(" ");
-};
+const joinClassnames = (...classnames: (string | undefined)[]) =>
+  classnames.filter((i) => i).join(" ");
 
-export type Props = React.AnchorHTMLAttributes<HTMLAnchorElement> & {
+export interface Props extends React.AnchorHTMLAttributes<HTMLAnchorElement> {
   activeClassName?: string;
   activeStyle?: React.CSSProperties;
   scrollIntoViewIfNeeded?: boolean;
@@ -42,7 +40,7 @@ export type Props = React.AnchorHTMLAttributes<HTMLAnchorElement> & {
   strict?: boolean;
   to: LocationDescriptor;
   onBeforeClick?: () => void;
-};
+}
 
 /**
  * A <Link> wrapper that clicks extra fast and knows if it's "active" or not.
@@ -64,7 +62,7 @@ const NavLink = ({
   to,
   ...rest
 }: Props) => {
-  const linkRef = React.useRef(null);
+  const linkRef = React.useRef<HTMLAnchorElement>(null);
   const context = React.useContext(RouterContext);
   const [preActive, setPreActive] = React.useState<boolean | undefined>(
     undefined
@@ -98,22 +96,21 @@ const NavLink = ({
       scrollIntoView(linkRef.current, {
         scrollMode: "if-needed",
         behavior: "auto",
+        boundary: (parent) => parent.id !== "sidebar",
       });
     }
   }, [linkRef, scrollIntoViewIfNeeded, isActive]);
 
   const shouldFastClick = React.useCallback(
-    (event: React.MouseEvent<HTMLAnchorElement>): boolean => {
-      return (
-        event.button === 0 && // Only intercept left clicks
-        !event.defaultPrevented &&
-        !rest.target &&
-        !event.altKey &&
-        !event.metaKey &&
-        !event.ctrlKey
-      );
-    },
-    [rest.target]
+    (event: React.MouseEvent<HTMLAnchorElement>): boolean =>
+      event.button === 0 && // Only intercept left clicks
+      !event.defaultPrevented &&
+      !rest.target &&
+      !event.altKey &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !isActive,
+    [rest.target, isActive]
   );
 
   const navigateTo = React.useCallback(() => {
@@ -153,14 +150,13 @@ const NavLink = ({
     <Link
       key={isActive ? "active" : "inactive"}
       ref={linkRef}
-      //onMouseDown={handleClick}
+      onClick={handleClick}
       onKeyDown={(event) => {
         if (["Enter", " "].includes(event.key)) {
           navigateTo();
           event.currentTarget?.blur();
         }
       }}
-      onClick={handleClick}
       aria-current={(isActive && ariaCurrent) || undefined}
       className={className}
       style={style}

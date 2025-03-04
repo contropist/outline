@@ -4,7 +4,9 @@ import { DateFilter as TDateFilter } from "@shared/types";
 import FilterOptions from "~/components/FilterOptions";
 
 type Props = {
-  dateFilter: string | null | undefined;
+  /** The selected date filter */
+  dateFilter?: string | null;
+  /** Callback when a date filter is selected */
   onSelect: (key: TDateFilter) => void;
 };
 
@@ -39,7 +41,7 @@ const DateFilter = ({ dateFilter, onSelect }: Props) => {
   return (
     <FilterOptions
       options={options}
-      activeKey={dateFilter}
+      selectedKeys={[dateFilter]}
       onSelect={onSelect}
       defaultLabel={t("Any time")}
     />

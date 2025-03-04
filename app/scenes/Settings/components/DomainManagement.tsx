@@ -2,16 +2,14 @@ import { observer } from "mobx-react";
 import { CloseIcon } from "outline-icons";
 import * as React from "react";
 import { Trans, useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import styled from "styled-components";
 import Button from "~/components/Button";
-import Fade from "~/components/Fade";
 import Flex from "~/components/Flex";
 import Input from "~/components/Input";
 import NudeButton from "~/components/NudeButton";
 import Tooltip from "~/components/Tooltip";
 import useCurrentTeam from "~/hooks/useCurrentTeam";
-import useStores from "~/hooks/useStores";
-import useToasts from "~/hooks/useToasts";
 import SettingRow from "./SettingRow";
 
 type Props = {
@@ -19,10 +17,8 @@ type Props = {
 };
 
 function DomainManagement({ onSuccess }: Props) {
-  const { auth } = useStores();
   const team = useCurrentTeam();
   const { t } = useTranslation();
-  const { showToast } = useToasts();
 
   const [allowedDomains, setAllowedDomains] = React.useState([
     ...(team.allowedDomains ?? []),
@@ -31,24 +27,19 @@ function DomainManagement({ onSuccess }: Props) {
     allowedDomains.length
   );
 
-  const [existingDomainsTouched, setExistingDomainsTouched] = React.useState(
-    false
-  );
+  const [existingDomainsTouched, setExistingDomainsTouched] =
+    React.useState(false);
 
   const handleSaveDomains = React.useCallback(async () => {
     try {
-      await auth.updateTeam({
-        allowedDomains,
-      });
+      await team.save({ allowedDomains });
       onSuccess();
       setExistingDomainsTouched(false);
       updateLastKnownDomainCount(allowedDomains.length);
     } catch (err) {
-      showToast(err.message, {
-        type: "error",
-      });
+      toast.error(err.message);
     }
-  }, [auth, allowedDomains, onSuccess, showToast]);
+  }, [team, allowedDomains, onSuccess]);
 
   const handleRemoveDomain = async (index: number) => {
     const newDomains = allowedDomains.filter((_, i) => index !== i);
@@ -67,19 +58,18 @@ function DomainManagement({ onSuccess }: Props) {
     setAllowedDomains(newDomains);
   };
 
-  const createOnDomainChangedHandler = (index: number) => (
-    ev: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    const newDomains = allowedDomains.slice();
+  const createOnDomainChangedHandler =
+    (index: number) => (ev: React.ChangeEvent<HTMLInputElement>) => {
+      const newDomains = allowedDomains.slice();
 
-    newDomains[index] = ev.currentTarget.value;
-    setAllowedDomains(newDomains);
+      newDomains[index] = ev.currentTarget.value;
+      setAllowedDomains(newDomains);
 
-    const touchedExistingDomain = index < lastKnownDomainCount;
-    if (touchedExistingDomain) {
-      setExistingDomainsTouched(true);
-    }
-  };
+      const touchedExistingDomain = index < lastKnownDomainCount;
+      if (touchedExistingDomain) {
+        setExistingDomainsTouched(true);
+      }
+    };
 
   const showSaveChanges =
     existingDomainsTouched ||
@@ -107,7 +97,7 @@ function DomainManagement({ onSuccess }: Props) {
             onChange={createOnDomainChangedHandler(index)}
           />
           <Remove>
-            <Tooltip tooltip={t("Remove domain")} placement="top">
+            <Tooltip content={t("Remove domain")} placement="top">
               <NudeButton onClick={() => handleRemoveDomain(index)}>
                 <CloseIcon />
               </NudeButton>
@@ -119,29 +109,25 @@ function DomainManagement({ onSuccess }: Props) {
       <Flex justify="space-between" gap={4} style={{ flexWrap: "wrap" }}>
         {!allowedDomains.length ||
         allowedDomains[allowedDomains.length - 1] !== "" ? (
-          <Fade>
-            <Button type="button" onClick={handleAddDomain} neutral>
-              {allowedDomains.length ? (
-                <Trans>Add another</Trans>
-              ) : (
-                <Trans>Add a domain</Trans>
-              )}
-            </Button>
-          </Fade>
+          <Button type="button" onClick={handleAddDomain} neutral>
+            {allowedDomains.length ? (
+              <Trans>Add another</Trans>
+            ) : (
+              <Trans>Add a domain</Trans>
+            )}
+          </Button>
         ) : (
           <span />
         )}
 
         {showSaveChanges && (
-          <Fade>
-            <Button
-              type="button"
-              onClick={handleSaveDomains}
-              disabled={auth.isSaving}
-            >
-              <Trans>Save changes</Trans>
-            </Button>
-          </Fade>
+          <Button
+            type="button"
+            onClick={handleSaveDomains}
+            disabled={team.isSaving}
+          >
+            <Trans>Save changes</Trans>
+          </Button>
         )}
       </Flex>
     </SettingRow>

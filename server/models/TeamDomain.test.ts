@@ -1,11 +1,7 @@
-import env from "@server/env";
 import { buildAdmin, buildTeam } from "@server/test/factories";
-import { setupTestDatabase } from "@server/test/support";
 import TeamDomain from "./TeamDomain";
 
-setupTestDatabase();
-
-describe("team domain model", () => {
+describe("TeamDomain", () => {
   describe("create", () => {
     it("should allow creation of domains", async () => {
       const team = await buildTeam();
@@ -37,7 +33,6 @@ describe("team domain model", () => {
     });
 
     it("should not allow creation of domains within restricted list", async () => {
-      env.DEPLOYMENT = "hosted";
       const TeamDomain = await import("./TeamDomain");
       const team = await buildTeam();
       const user = await buildAdmin({ teamId: team.id });
@@ -57,7 +52,6 @@ describe("team domain model", () => {
     });
 
     it("should ignore casing and spaces when creating domains", async () => {
-      env.DEPLOYMENT = "hosted";
       const TeamDomain = await import("./TeamDomain");
       const team = await buildTeam();
       const user = await buildAdmin({ teamId: team.id });

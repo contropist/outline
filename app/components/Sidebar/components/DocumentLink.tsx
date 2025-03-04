@@ -2,31 +2,37 @@ import { Location } from "history";
 import { observer } from "mobx-react";
 import { PlusIcon } from "outline-icons";
 import * as React from "react";
-import { useDrag, useDrop } from "react-dnd";
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router-dom";
+import { useHistory } from "react-router-dom";
 import styled from "styled-components";
+import Icon from "@shared/components/Icon";
+import { NavigationNode, UserPreference } from "@shared/types";
+import { ProsemirrorHelper } from "@shared/utils/ProsemirrorHelper";
 import { sortNavigationNodes } from "@shared/utils/collections";
 import { DocumentValidation } from "@shared/validations";
 import Collection from "~/models/Collection";
 import Document from "~/models/Document";
+import EditableTitle, { RefHandle } from "~/components/EditableTitle";
 import Fade from "~/components/Fade";
 import NudeButton from "~/components/NudeButton";
 import Tooltip from "~/components/Tooltip";
 import useBoolean from "~/hooks/useBoolean";
+import useCurrentUser from "~/hooks/useCurrentUser";
 import usePolicy from "~/hooks/usePolicy";
 import useStores from "~/hooks/useStores";
-import useToasts from "~/hooks/useToasts";
 import DocumentMenu from "~/menus/DocumentMenu";
-import { NavigationNode } from "~/types";
-import { newDocumentPath } from "~/utils/routeHelpers";
+import { documentEditPath } from "~/utils/routeHelpers";
+import {
+  useDragDocument,
+  useDropToReorderDocument,
+  useDropToReparentDocument,
+} from "../hooks/useDragAndDrop";
 import DropCursor from "./DropCursor";
 import DropToImport from "./DropToImport";
-import EditableTitle from "./EditableTitle";
 import Folder from "./Folder";
 import Relative from "./Relative";
-import SidebarLink, { DragObject } from "./SidebarLink";
-import { useStarredContext } from "./StarredContext";
+import { SidebarContextType, useSidebarContext } from "./SidebarContext";
+import SidebarLink from "./SidebarLink";
 
 type Props = {
   node: NavigationNode;
@@ -52,9 +58,9 @@ function InnerDocumentLink(
   }: Props,
   ref: React.RefObject<HTMLAnchorElement>
 ) {
-  const { showToast } = useToasts();
   const { documents, policies } = useStores();
   const { t } = useTranslation();
+  const history = useHistory();
   const canUpdate = usePolicy(node.id).update;
   const isActiveDocument = activeDocument && activeDocument.id === node.id;
   const hasChildDocuments =
@@ -62,200 +68,114 @@ function InnerDocumentLink(
   const document = documents.get(node.id);
   const { fetchChildDocuments } = documents;
   const [isEditing, setIsEditing] = React.useState(false);
-  const inStarredSection = useStarredContext();
+  const editableTitleRef = React.useRef<RefHandle>(null);
+  const sidebarContext = useSidebarContext();
+  const user = useCurrentUser();
 
   React.useEffect(() => {
-    if (isActiveDocument && hasChildDocuments) {
-      fetchChildDocuments(node.id);
+    if (
+      isActiveDocument &&
+      (hasChildDocuments || sidebarContext !== "collections")
+    ) {
+      void fetchChildDocuments(node.id);
     }
-  }, [fetchChildDocuments, node, hasChildDocuments, isActiveDocument]);
+  }, [
+    fetchChildDocuments,
+    node.id,
+    hasChildDocuments,
+    sidebarContext,
+    isActiveDocument,
+  ]);
 
-  const pathToNode = React.useMemo(
-    () => collection?.pathToDocument(node.id).map((entry) => entry.id),
-    [collection, node]
+  const showChildren = React.useMemo(
+    () =>
+      !!(
+        hasChildDocuments &&
+        activeDocument &&
+        collection &&
+        (collection
+          .pathToDocument(activeDocument.id)
+          .map((entry) => entry.id)
+          .includes(node.id) ||
+          isActiveDocument)
+      ),
+    [hasChildDocuments, activeDocument, isActiveDocument, node, collection]
   );
 
-  const showChildren = React.useMemo(() => {
-    return !!(
-      hasChildDocuments &&
-      activeDocument &&
-      collection &&
-      (collection
-        .pathToDocument(activeDocument.id)
-        .map((entry) => entry.id)
-        .includes(node.id) ||
-        isActiveDocument)
-    );
-  }, [hasChildDocuments, activeDocument, isActiveDocument, node, collection]);
-
-  const [expanded, setExpanded] = React.useState(showChildren);
+  const [expanded, setExpanded, setCollapsed] = useBoolean(showChildren);
 
   React.useEffect(() => {
     if (showChildren) {
-      setExpanded(showChildren);
+      setExpanded();
     }
-  }, [showChildren]);
+  }, [setExpanded, showChildren]);
 
   // when the last child document is removed auto-close the local folder state
   React.useEffect(() => {
     if (expanded && !hasChildDocuments) {
-      setExpanded(false);
+      setCollapsed();
     }
-  }, [expanded, hasChildDocuments]);
+  }, [setCollapsed, expanded, hasChildDocuments]);
 
   const handleDisclosureClick = React.useCallback(
     (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      setExpanded(!expanded);
+      ev?.preventDefault();
+      expanded ? setCollapsed() : setExpanded();
     },
-    [expanded]
+    [setCollapsed, setExpanded, expanded]
   );
 
-  const handleMouseEnter = React.useCallback(() => {
-    prefetchDocument?.(node.id);
+  const handlePrefetch = React.useCallback(() => {
+    void prefetchDocument?.(node.id);
   }, [prefetchDocument, node]);
 
   const handleTitleChange = React.useCallback(
-    async (title: string) => {
+    async (value: string) => {
       if (!document) {
         return;
       }
-      await documents.update(
-        {
-          id: document.id,
-          text: document.text,
-          title,
-        },
-        {
-          lastRevision: document.revision,
-        }
-      );
+      await documents.update({
+        id: document.id,
+        title: value,
+      });
     },
     [documents, document]
   );
   const [menuOpen, handleMenuOpen, handleMenuClose] = useBoolean();
   const isMoving = documents.movingDocumentId === node.id;
-  const manualSort = collection?.sort.field === "index";
+  const can = policies.abilities(node.id);
+  const icon = document?.icon || node.icon || node.emoji;
+  const color = document?.color || node.color;
 
   // Draggable
-  const [{ isDragging }, drag] = useDrag({
-    type: "document",
-    item: () => ({
-      ...node,
-      depth,
-      active: isActiveDocument,
-      collectionId: collection?.id || "",
-    }),
-    collect: (monitor) => ({
-      isDragging: monitor.isDragging(),
-    }),
-    canDrag: () => {
-      return (
-        !isDraft &&
-        (policies.abilities(node.id).move ||
-          policies.abilities(node.id).archive ||
-          policies.abilities(node.id).delete)
-      );
-    },
-  });
-
-  const hoverExpanding = React.useRef<ReturnType<typeof setTimeout>>();
-
-  // We set a timeout when the user first starts hovering over the document link,
-  // to trigger expansion of children. Clear this timeout when they stop hovering.
-  const resetHoverExpanding = React.useCallback(() => {
-    if (hoverExpanding.current) {
-      clearTimeout(hoverExpanding.current);
-      hoverExpanding.current = undefined;
-    }
-  }, []);
+  const [{ isDragging }, drag] = useDragDocument(node, depth, document);
 
   // Drop to re-parent
-  const [{ isOverReparent, canDropToReparent }, dropToReparent] = useDrop({
-    accept: "document",
-    drop: (item: DragObject, monitor) => {
-      if (monitor.didDrop()) {
-        return;
-      }
-      if (!collection) {
-        return;
-      }
-      documents.move(item.id, collection.id, node.id);
-    },
-    canDrop: (_item, monitor) =>
-      !isDraft &&
-      !!pathToNode &&
-      !pathToNode.includes(monitor.getItem<DragObject>().id),
-    hover: (_item, monitor) => {
-      // Enables expansion of document children when hovering over the document
-      // for more than half a second.
-      if (
-        hasChildDocuments &&
-        monitor.canDrop() &&
-        monitor.isOver({
-          shallow: true,
-        })
-      ) {
-        if (!hoverExpanding.current) {
-          hoverExpanding.current = setTimeout(() => {
-            hoverExpanding.current = undefined;
-
-            if (
-              monitor.isOver({
-                shallow: true,
-              })
-            ) {
-              setExpanded(true);
-            }
-          }, 500);
-        }
-      }
-    },
-    collect: (monitor) => ({
-      isOverReparent: monitor.isOver({
-        shallow: true,
-      }),
-      canDropToReparent: monitor.canDrop(),
-    }),
-  });
+  const parentRef = React.useRef<HTMLDivElement>(null);
+  const [{ isOverReparent, canDropToReparent }, dropToReparent] =
+    useDropToReparentDocument(node, setExpanded, parentRef);
 
   // Drop to reorder
-  const [{ isOverReorder, isDraggingAnyDocument }, dropToReorder] = useDrop({
-    accept: "document",
-    drop: (item: DragObject) => {
-      if (!manualSort) {
-        showToast(
-          t(
-            "You can't reorder documents in an alphabetically sorted collection"
-          ),
-          {
-            type: "info",
-            timeout: 5000,
-          }
-        );
-        return;
-      }
-
+  const [{ isOverReorder, isDraggingAnyDocument }, dropToReorder] =
+    useDropToReorderDocument(node, collection, (item) => {
       if (!collection) {
         return;
       }
-      if (item.id === node.id) {
-        return;
-      }
-
       if (expanded) {
-        documents.move(item.id, collection.id, node.id, 0);
-        return;
+        return {
+          documentId: item.id,
+          collectionId: collection.id,
+          parentDocumentId: node.id,
+          index: 0,
+        };
       }
-
-      documents.move(item.id, collection.id, parentId, index + 1);
-    },
-    collect: (monitor) => ({
-      isOverReorder: monitor.isOver(),
-      isDraggingAnyDocument: monitor.canDrop(),
-    }),
-  });
+      return {
+        documentId: item.id,
+        collectionId: collection.id,
+        parentDocumentId: parentId,
+        index: index + 1,
+      };
+    });
 
   const nodeChildren = React.useMemo(() => {
     const insertDraftDocument =
@@ -279,15 +199,9 @@ function InnerDocumentLink(
     node,
   ]);
 
-  const handleTitleEditing = React.useCallback((isEditing: boolean) => {
-    setIsEditing(isEditing);
-  }, []);
+  const doc = documents.get(node.id);
+  const title = doc?.title || node.title || t("Untitled");
 
-  const title =
-    (activeDocument?.id === node.id ? activeDocument.title : node.title) ||
-    t("Untitled");
-
-  const can = policies.abilities(node.id);
   const isExpanded = expanded && !isDragging;
   const hasChildren = nodeChildren.length > 0;
 
@@ -297,18 +211,55 @@ function InnerDocumentLink(
         return;
       }
       if (ev.key === "ArrowRight" && !expanded) {
-        setExpanded(true);
+        setExpanded();
       }
       if (ev.key === "ArrowLeft" && expanded) {
-        setExpanded(false);
+        setCollapsed();
       }
     },
-    [hasChildren, expanded]
+    [setExpanded, setCollapsed, hasChildren, expanded]
+  );
+
+  const [isAddingNewChild, setIsAddingNewChild, closeAddingNewChild] =
+    useBoolean();
+
+  const handleNewDoc = React.useCallback(
+    async (input) => {
+      const newDocument = await documents.create(
+        {
+          collectionId: collection?.id,
+          parentDocumentId: node.id,
+          fullWidth:
+            doc?.fullWidth ??
+            user.getPreference(UserPreference.FullWidthDocuments),
+          title: input,
+          data: ProsemirrorHelper.getEmptyDocument(),
+        },
+        { publish: true }
+      );
+      collection?.addDocument(newDocument, node.id);
+
+      closeAddingNewChild();
+      history.push({
+        pathname: documentEditPath(newDocument),
+        state: { sidebarContext },
+      });
+    },
+    [
+      documents,
+      collection,
+      sidebarContext,
+      user,
+      node,
+      doc,
+      history,
+      closeAddingNewChild,
+    ]
   );
 
   return (
     <>
-      <Relative onDragLeave={resetHoverExpanding}>
+      <Relative ref={parentRef}>
         <Draggable
           key={node.id}
           ref={drag}
@@ -321,31 +272,44 @@ function InnerDocumentLink(
               <SidebarLink
                 expanded={hasChildren ? isExpanded : undefined}
                 onDisclosureClick={handleDisclosureClick}
-                onMouseEnter={handleMouseEnter}
+                onClickIntent={handlePrefetch}
                 to={{
                   pathname: node.url,
                   state: {
                     title: node.title,
-                    starred: inStarredSection,
+                    sidebarContext,
                   },
                 }}
+                icon={icon && <Icon value={icon} color={color} />}
                 label={
                   <EditableTitle
                     title={title}
                     onSubmit={handleTitleChange}
-                    onEditing={handleTitleEditing}
+                    onEditing={setIsEditing}
                     canUpdate={canUpdate}
                     maxLength={DocumentValidation.maxTitleLength}
+                    ref={editableTitleRef}
                   />
                 }
-                isActive={(match, location: Location<{ starred?: boolean }>) =>
-                  !!match && location.state?.starred === inStarredSection
-                }
+                isActive={(
+                  match,
+                  location: Location<{
+                    sidebarContext?: SidebarContextType;
+                  }>
+                ) => {
+                  if (sidebarContext !== location.state?.sidebarContext) {
+                    return false;
+                  }
+                  return (
+                    (document && location.pathname.endsWith(document.urlId)) ||
+                    !!match
+                  );
+                }}
                 isActiveDrop={isOverReparent && canDropToReparent}
                 depth={depth}
                 exact={false}
                 showActions={menuOpen}
-                scrollIntoViewIfNeeded={!inStarredSection}
+                scrollIntoViewIfNeeded={sidebarContext === "collections"}
                 isDraft={isDraft}
                 ref={ref}
                 menu={
@@ -355,14 +319,15 @@ function InnerDocumentLink(
                   !isDraggingAnyDocument ? (
                     <Fade>
                       {can.createChildDocument && (
-                        <Tooltip tooltip={t("New doc")} delay={500}>
+                        <Tooltip content={t("New doc")}>
                           <NudeButton
                             type={undefined}
                             aria-label={t("New nested document")}
-                            as={Link}
-                            to={newDocumentPath(document.collectionId, {
-                              parentDocumentId: document.id,
-                            })}
+                            onClick={(ev) => {
+                              ev.preventDefault();
+                              setIsAddingNewChild();
+                              setExpanded();
+                            }}
                           >
                             <PlusIcon />
                           </NudeButton>
@@ -370,6 +335,9 @@ function InnerDocumentLink(
                       )}
                       <DocumentMenu
                         document={document}
+                        onRename={() =>
+                          editableTitleRef.current?.setIsEditing(true)
+                        }
                         onOpen={handleMenuOpen}
                         onClose={handleMenuClose}
                       />
@@ -380,16 +348,29 @@ function InnerDocumentLink(
             </DropToImport>
           </div>
         </Draggable>
-        {isDraggingAnyDocument && (
-          <DropCursor
-            disabled={!manualSort}
-            isActiveDrop={isOverReorder}
-            innerRef={dropToReorder}
-          />
+        {isDraggingAnyDocument && collection?.isManualSort && (
+          <DropCursor isActiveDrop={isOverReorder} innerRef={dropToReorder} />
         )}
       </Relative>
+      {isAddingNewChild && (
+        <SidebarLink
+          isActive={() => true}
+          depth={depth + 1}
+          label={
+            <EditableTitle
+              title=""
+              canUpdate
+              isEditing
+              placeholder={`${t("New doc")}…`}
+              onCancel={closeAddingNewChild}
+              onSubmit={handleNewDoc}
+              maxLength={DocumentValidation.maxTitleLength}
+            />
+          }
+        />
+      )}
       <Folder expanded={expanded && !isDragging}>
-        {nodeChildren.map((childNode, index) => (
+        {nodeChildren.map((childNode, childIndex) => (
           <DocumentLink
             key={childNode.id}
             collection={collection}
@@ -398,7 +379,7 @@ function InnerDocumentLink(
             prefetchDocument={prefetchDocument}
             isDraft={childNode.isDraft}
             depth={depth + 1}
-            index={index}
+            index={childIndex}
             parentId={node.id}
           />
         ))}
@@ -408,7 +389,8 @@ function InnerDocumentLink(
 }
 
 const Draggable = styled.div<{ $isDragging?: boolean; $isMoving?: boolean }>`
-  opacity: ${(props) => (props.$isDragging || props.$isMoving ? 0.5 : 1)};
+  transition: opacity 250ms ease;
+  opacity: ${(props) => (props.$isDragging || props.$isMoving ? 0.1 : 1)};
   pointer-events: ${(props) => (props.$isMoving ? "none" : "all")};
 `;
 

@@ -7,39 +7,71 @@ import {
   PublishIcon,
   MoveIcon,
   UnpublishIcon,
-  LightningIcon,
+  RestoreIcon,
+  UserIcon,
+  CrossIcon,
 } from "outline-icons";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { useLocation } from "react-router-dom";
-import { CompositeStateReturn } from "reakit/Composite";
 import styled, { css } from "styled-components";
+import EventBoundary from "@shared/components/EventBoundary";
+import { s, hover } from "@shared/styles";
+import { RevisionHelper } from "@shared/utils/RevisionHelper";
 import Document from "~/models/Document";
-import Event from "~/models/Event";
-import Avatar from "~/components/Avatar";
-import CompositeItem, {
-  Props as ItemProps,
-} from "~/components/List/CompositeItem";
+import { Avatar, AvatarSize } from "~/components/Avatar";
 import Item, { Actions } from "~/components/List/Item";
 import Time from "~/components/Time";
+import { useLocationSidebarContext } from "~/hooks/useLocationSidebarContext";
 import useStores from "~/hooks/useStores";
 import RevisionMenu from "~/menus/RevisionMenu";
-import { documentHistoryUrl } from "~/utils/routeHelpers";
+import Logger from "~/utils/Logger";
+import { documentHistoryPath } from "~/utils/routeHelpers";
+import Text from "./Text";
+
+export type RevisionEvent = {
+  name: "revisions.create";
+  latest: boolean;
+};
+
+export type DocumentEvent = {
+  name:
+    | "documents.publish"
+    | "documents.unpublish"
+    | "documents.archive"
+    | "documents.unarchive"
+    | "documents.delete"
+    | "documents.restore"
+    | "documents.add_user"
+    | "documents.remove_user"
+    | "documents.move";
+  userId: string;
+};
+
+export type Event = { id: string; actorId: string; createdAt: string } & (
+  | RevisionEvent
+  | DocumentEvent
+);
 
 type Props = {
   document: Document;
   event: Event;
-  latest?: boolean;
-} & CompositeStateReturn;
+};
 
-const EventListItem = ({ event, latest, document, ...rest }: Props) => {
+const EventListItem = ({ event, document, ...rest }: Props) => {
   const { t } = useTranslation();
-  const { revisions } = useStores();
+  const { revisions, users } = useStores();
+  const actor = "actorId" in event ? users.get(event.actorId) : undefined;
+  const user = "userId" in event ? users.get(event.userId) : undefined;
   const location = useLocation();
+  const sidebarContext = useLocationSidebarContext();
+  const revisionLoadedRef = React.useRef(false);
   const opts = {
-    userName: event.actor.name,
+    userName: actor?.name,
   };
   const isRevision = event.name === "revisions.create";
+  const isDerivedFromDocument =
+    event.id === RevisionHelper.latestId(document.id);
   let meta, icon, to: LocationDescriptor | undefined;
 
   const ref = React.useRef<HTMLAnchorElement>(null);
@@ -49,66 +81,91 @@ const EventListItem = ({ event, latest, document, ...rest }: Props) => {
     ref.current?.focus();
   };
 
-  const prefetchRevision = () => {
-    if (event.name === "revisions.create" && event.modelId) {
-      revisions.fetch(event.modelId);
+  const prefetchRevision = async () => {
+    if (
+      !document.isDeleted &&
+      event.name === "revisions.create" &&
+      !isDerivedFromDocument &&
+      !revisionLoadedRef.current
+    ) {
+      await revisions.fetch(event.id, { force: true });
+      revisionLoadedRef.current = true;
     }
   };
 
   switch (event.name) {
     case "revisions.create":
-      icon = <EditIcon color="currentColor" size={16} />;
-      meta = t("{{userName}} edited", opts);
+      icon = <EditIcon size={16} />;
+      meta = event.latest ? (
+        <>
+          {t("Current version")} &middot; {actor?.name}
+        </>
+      ) : (
+        t("{{userName}} edited", opts)
+      );
       to = {
-        pathname: documentHistoryUrl(document, event.modelId || ""),
-        state: { retainScrollPosition: true },
-      };
-      break;
-
-    case "documents.live_editing":
-      icon = <LightningIcon color="currentColor" size={16} />;
-      meta = t("Latest");
-      to = {
-        pathname: documentHistoryUrl(document),
-        state: { retainScrollPosition: true },
+        pathname: documentHistoryPath(
+          document,
+          isDerivedFromDocument ? "latest" : event.id
+        ),
+        state: {
+          sidebarContext,
+          retainScrollPosition: true,
+        },
       };
       break;
 
     case "documents.archive":
-      icon = <ArchiveIcon color="currentColor" size={16} />;
+      icon = <ArchiveIcon />;
       meta = t("{{userName}} archived", opts);
       break;
 
     case "documents.unarchive":
+      icon = <RestoreIcon />;
       meta = t("{{userName}} restored", opts);
       break;
 
     case "documents.delete":
-      icon = <TrashIcon color="currentColor" size={16} />;
+      icon = <TrashIcon />;
       meta = t("{{userName}} deleted", opts);
+      break;
+    case "documents.add_user":
+      icon = <UserIcon />;
+      meta = t("{{userName}} added {{addedUserName}}", {
+        ...opts,
+        addedUserName: user?.name ?? t("a user"),
+      });
+      break;
+    case "documents.remove_user":
+      icon = <CrossIcon />;
+      meta = t("{{userName}} removed {{removedUserName}}", {
+        ...opts,
+        removedUserName: user?.name ?? t("a user"),
+      });
       break;
 
     case "documents.restore":
+      icon = <RestoreIcon />;
       meta = t("{{userName}} moved from trash", opts);
       break;
 
     case "documents.publish":
-      icon = <PublishIcon color="currentColor" size={16} />;
+      icon = <PublishIcon />;
       meta = t("{{userName}} published", opts);
       break;
 
     case "documents.unpublish":
-      icon = <UnpublishIcon color="currentColor" size={16} />;
+      icon = <UnpublishIcon />;
       meta = t("{{userName}} unpublished", opts);
       break;
 
     case "documents.move":
-      icon = <MoveIcon color="currentColor" size={16} />;
+      icon = <MoveIcon />;
       meta = t("{{userName}} moved", opts);
       break;
 
     default:
-      console.warn("Unhandled event: ", event.name);
+      Logger.warn("Unhandled event", { event });
   }
 
   if (!meta) {
@@ -124,15 +181,14 @@ const EventListItem = ({ event, latest, document, ...rest }: Props) => {
     to = undefined;
   }
 
-  return (
-    <BaseItem
+  return event.name === "revisions.create" ? (
+    <RevisionItem
       small
       exact
       to={to}
       title={
         <Time
           dateTime={event.createdAt}
-          tooltipDelay={500}
           format={{
             en_US: "MMM do, h:mm a",
             fr_FR: "'Le 'd MMMM 'à' H:mm",
@@ -142,94 +198,121 @@ const EventListItem = ({ event, latest, document, ...rest }: Props) => {
           onClick={handleTimeClick}
         />
       }
-      image={<Avatar model={event.actor} size={32} />}
-      subtitle={
-        <Subtitle>
-          {icon}
-          {meta}
-        </Subtitle>
-      }
+      image={<Avatar model={actor} size={AvatarSize.Large} />}
+      subtitle={meta}
       actions={
-        isRevision && isActive && event.modelId ? (
-          <RevisionMenu document={document} revisionId={event.modelId} />
+        isRevision && isActive && !event.latest ? (
+          <StyledEventBoundary>
+            <RevisionMenu document={document} revisionId={event.id} />
+          </StyledEventBoundary>
         ) : undefined
       }
       onMouseEnter={prefetchRevision}
       ref={ref}
       {...rest}
     />
+  ) : (
+    <EventItem>
+      <IconWrapper size="xsmall" type="secondary">
+        {icon}
+      </IconWrapper>
+      <Text size="xsmall" type="secondary">
+        {meta} &middot;{" "}
+        <Time dateTime={event.createdAt} relative shorten addSuffix />
+      </Text>
+    </EventItem>
   );
 };
 
-const BaseItem = React.forwardRef(
-  ({ to, ...rest }: ItemProps, ref?: React.Ref<HTMLAnchorElement>) => {
-    if (to) {
-      return <CompositeListItem to={to} ref={ref} {...rest} />;
-    }
-
-    return <ListItem ref={ref} {...rest} />;
+const lineStyle = css`
+  &::before {
+    content: "";
+    display: block;
+    position: absolute;
+    top: -8px;
+    left: 22px;
+    width: 1px;
+    height: calc(50% - 14px + 8px);
+    background: ${s("divider")};
+    mix-blend-mode: multiply;
+    z-index: 1;
   }
-);
 
-const Subtitle = styled.span`
-  svg {
-    margin: -3px;
-    margin-right: 2px;
+  &:first-child::before {
+    display: none;
+  }
+
+  &:nth-child(2)::before {
+    display: none;
+  }
+
+  &::after {
+    content: "";
+    display: block;
+    position: absolute;
+    top: calc(50% + 14px);
+    left: 22px;
+    width: 1px;
+    height: calc(50% - 14px);
+    background: ${s("divider")};
+    mix-blend-mode: multiply;
+    z-index: 1;
+  }
+
+  &:last-child::after {
+    display: none;
+  }
+
+  h3 + &::before {
+    display: none;
   }
 `;
 
-const ItemStyle = css`
+const IconWrapper = styled(Text)`
+  height: 24px;
+`;
+
+const EventItem = styled.li`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  list-style: none;
+  margin: 8px 0;
+  padding: 4px 10px;
+  white-space: nowrap;
+  position: relative;
+
+  time {
+    white-space: nowrap;
+  }
+
+  svg {
+    flex-shrink: 0;
+  }
+
+  ${lineStyle}
+`;
+
+const StyledEventBoundary = styled(EventBoundary)`
+  height: 24px;
+`;
+
+const RevisionItem = styled(Item)`
   border: 0;
   position: relative;
   margin: 8px 0;
   padding: 8px;
   border-radius: 8px;
 
-  img {
-    border-color: transparent;
-  }
-
-  &::before {
-    content: "";
-    display: block;
-    position: absolute;
-    top: -4px;
-    left: 23px;
-    width: 2px;
-    height: calc(100% + 8px);
-    background: ${(props) => props.theme.textSecondary};
-    opacity: 0.25;
-  }
-
-  &:nth-child(2)::before {
-    height: 50%;
-    top: auto;
-    bottom: -4px;
-  }
-
-  &:last-child::before {
-    height: 50%;
-  }
-
-  &:first-child:last-child::before {
-    display: none;
-  }
+  ${lineStyle}
 
   ${Actions} {
     opacity: 0.5;
 
-    &:hover {
+    &: ${hover} {
       opacity: 1;
     }
   }
-`;
-
-const ListItem = styled(Item)`
-  ${ItemStyle}
-`;
-
-const CompositeListItem = styled(CompositeItem)`
-  ${ItemStyle}
 `;
 
 export default observer(EventListItem);

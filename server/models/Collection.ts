@@ -1,6 +1,17 @@
-import { find, findIndex, remove, uniq } from "lodash";
-import randomstring from "randomstring";
-import { Identifier, Transaction, Op, FindOptions } from "sequelize";
+/* eslint-disable lines-between-class-members */
+import find from "lodash/find";
+import findIndex from "lodash/findIndex";
+import remove from "lodash/remove";
+import uniq from "lodash/uniq";
+import {
+  Identifier,
+  Transaction,
+  FindOptions,
+  NonNullFindOptions,
+  InferAttributes,
+  InferCreationAttributes,
+  EmptyResultError,
+} from "sequelize";
 import {
   Sequelize,
   Table,
@@ -10,7 +21,6 @@ import {
   Default,
   BeforeValidate,
   BeforeSave,
-  AfterDestroy,
   AfterCreate,
   HasMany,
   BelongsToMany,
@@ -19,39 +29,49 @@ import {
   Scopes,
   DataType,
   Length as SimpleLength,
+  BeforeDestroy,
+  IsDate,
+  AllowNull,
 } from "sequelize-typescript";
 import isUUID from "validator/lib/isUUID";
-import { CollectionPermission } from "@shared/types";
+import type { CollectionSort, ProsemirrorData } from "@shared/types";
+import { CollectionPermission, NavigationNode } from "@shared/types";
+import { UrlHelper } from "@shared/utils/UrlHelper";
 import { sortNavigationNodes } from "@shared/utils/collections";
-import { SLUG_URL_REGEX } from "@shared/utils/urlHelpers";
+import slugify from "@shared/utils/slugify";
 import { CollectionValidation } from "@shared/validations";
-import slugify from "@server/utils/slugify";
-import type { NavigationNode, CollectionSort } from "~/types";
-import CollectionGroup from "./CollectionGroup";
-import CollectionUser from "./CollectionUser";
+import { ValidationError } from "@server/errors";
+import { generateUrlId } from "@server/utils/url";
 import Document from "./Document";
 import FileOperation from "./FileOperation";
 import Group from "./Group";
+import GroupMembership from "./GroupMembership";
 import GroupUser from "./GroupUser";
 import Team from "./Team";
 import User from "./User";
+import UserMembership from "./UserMembership";
 import ParanoidModel from "./base/ParanoidModel";
 import Fix from "./decorators/Fix";
+import { DocumentHelper } from "./helpers/DocumentHelper";
 import IsHexColor from "./validators/IsHexColor";
 import Length from "./validators/Length";
 import NotContainsUrl from "./validators/NotContainsUrl";
+
+type AdditionalFindOptions = {
+  rejectOnEmpty?: boolean | Error;
+};
 
 @Scopes(() => ({
   withAllMemberships: {
     include: [
       {
-        model: CollectionUser,
+        model: UserMembership,
         as: "memberships",
         required: false,
       },
       {
-        model: CollectionGroup,
-        as: "collectionGroupMemberships",
+        model: GroupMembership,
+        as: "groupMemberships",
         required: false,
         // use of "separate" property: sequelize breaks when there are
         // nested "includes" with alternating values for "required"
@@ -59,7 +79,7 @@ import NotContainsUrl from "./validators/NotContainsUrl";
         separate: true,
         // include for groups that are members of this collection,
         // of which userId is a member of, resulting in:
-        // CollectionGroup [inner join] Group [inner join] GroupUser [where] userId
+        // GroupMembership [inner join] Group [inner join] GroupUser [where] userId
         include: [
           {
             model: Group,
@@ -68,7 +88,7 @@ import NotContainsUrl from "./validators/NotContainsUrl";
             include: [
               {
                 model: GroupUser,
-                as: "groupMemberships",
+                as: "groupUsers",
                 required: true,
               },
             ],
@@ -86,51 +106,66 @@ import NotContainsUrl from "./validators/NotContainsUrl";
       },
     ],
   }),
-  withMembership: (userId: string) => ({
+  withArchivedBy: () => ({
     include: [
       {
-        model: CollectionUser,
-        as: "memberships",
-        where: {
-          userId,
-        },
-        required: false,
-      },
-      {
-        model: CollectionGroup,
-        as: "collectionGroupMemberships",
-        required: false,
-        // use of "separate" property: sequelize breaks when there are
-        // nested "includes" with alternating values for "required"
-        // see https://github.com/sequelize/sequelize/issues/9869
-        separate: true,
-        // include for groups that are members of this collection,
-        // of which userId is a member of, resulting in:
-        // CollectionGroup [inner join] Group [inner join] GroupUser [where] userId
-        include: [
-          {
-            model: Group,
-            as: "group",
-            required: true,
-            include: [
-              {
-                model: GroupUser,
-                as: "groupMemberships",
-                required: true,
-                where: {
-                  userId,
-                },
-              },
-            ],
-          },
-        ],
+        association: "archivedBy",
       },
     ],
   }),
+  withMembership: (userId: string) => {
+    if (!userId) {
+      return {};
+    }
+
+    return {
+      include: [
+        {
+          association: "memberships",
+          where: {
+            userId,
+          },
+          required: false,
+        },
+        {
+          model: GroupMembership,
+          as: "groupMemberships",
+          required: false,
+          // use of "separate" property: sequelize breaks when there are
+          // nested "includes" with alternating values for "required"
+          // see https://github.com/sequelize/sequelize/issues/9869
+          separate: true,
+          // include for groups that are members of this collection,
+          // of which userId is a member of, resulting in:
+          // CollectionGroup [inner join] Group [inner join] GroupUser [where] userId
+          include: [
+            {
+              model: Group,
+              as: "group",
+              required: true,
+              include: [
+                {
+                  model: GroupUser,
+                  as: "groupUsers",
+                  required: true,
+                  where: {
+                    userId,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+  },
 }))
 @Table({ tableName: "collections", modelName: "collection" })
 @Fix
-class Collection extends ParanoidModel {
+class Collection extends ParanoidModel<
+  InferAttributes<Collection>,
+  Partial<InferCreationAttributes<Collection>>
+> {
   @SimpleLength({
     min: 10,
     max: 10,
@@ -148,13 +183,26 @@ class Collection extends ParanoidModel {
   @Column
   name: string;
 
+  /**
+   * The content of the collection as Markdown.
+   *
+   * @deprecated Use `content` instead, or `DocumentHelper.toMarkdown` if exporting lossy markdown.
+   * This column will be removed in a future migration.
+   */
   @Length({
     max: CollectionValidation.maxDescriptionLength,
     msg: `description must be ${CollectionValidation.maxDescriptionLength} characters or less`,
   })
   @Column
-  description: string;
+  description: string | null;
 
+  /**
+   * The content of the collection as JSON, this is a snapshot at the last time the state was saved.
+   */
+  @Column(DataType.JSONB)
+  content: ProsemirrorData | null;
+
+  /** An icon (or) emoji to use as the collection icon. */
   @Length({
     max: 50,
     msg: `icon must be 50 characters or less`,
@@ -162,13 +210,14 @@ class Collection extends ParanoidModel {
   @Column
   icon: string | null;
 
+  /** The color of the icon. */
   @IsHexColor
   @Column
   color: string | null;
 
   @Length({
-    max: 50,
-    msg: `index must 50 characters or less`,
+    max: 256,
+    msg: `index must be 256 characters or less`,
   })
   @Column
   index: string | null;
@@ -214,39 +263,64 @@ class Collection extends ParanoidModel {
   })
   sort: CollectionSort;
 
+  /** Whether the collection is archived, and if so when. */
+  @IsDate
+  @Column
+  archivedAt: Date | null;
+
   // getters
 
+  /**
+   * The frontend path to this collection.
+   *
+   * @deprecated Use `path` instead.
+   */
   get url(): string {
+    return this.path;
+  }
+
+  /** The frontend path to this collection. */
+  get path(): string {
     if (!this.name) {
       return `/collection/untitled-${this.urlId}`;
     }
     return `/collection/${slugify(this.name)}-${this.urlId}`;
   }
 
+  /**
+   * Whether this collection is considered active or not. A collection is active if
+   * it has not been archived or deleted.
+   *
+   * @returns boolean
+   */
+  get isActive(): boolean {
+    return !this.archivedAt && !this.deletedAt;
+  }
+
   // hooks
 
   @BeforeValidate
   static async onBeforeValidate(model: Collection) {
-    model.urlId = model.urlId || randomstring.generate(10);
+    model.urlId = model.urlId || generateUrlId();
   }
 
   @BeforeSave
   static async onBeforeSave(model: Collection) {
-    if (model.icon === "collection") {
-      model.icon = null;
+    if (!model.content) {
+      model.content = await DocumentHelper.toJSON(model);
     }
   }
 
-  @AfterDestroy
-  static async onAfterDestroy(model: Collection) {
-    await Document.destroy({
+  @BeforeDestroy
+  static async checkLastCollection(model: Collection) {
+    const total = await this.count({
       where: {
-        collectionId: model.id,
-        archivedAt: {
-          [Op.is]: null,
-        },
+        teamId: model.teamId,
       },
     });
+    if (total === 1) {
+      throw ValidationError("Cannot delete last collection");
+    }
   }
 
   @AfterCreate
@@ -254,21 +328,18 @@ class Collection extends ParanoidModel {
     model: Collection,
     options: { transaction: Transaction }
   ) {
-    if (model.permission !== CollectionPermission.ReadWrite) {
-      return CollectionUser.findOrCreate({
-        where: {
-          collectionId: model.id,
-          userId: model.createdById,
-        },
-        defaults: {
-          permission: CollectionPermission.ReadWrite,
-          createdById: model.createdById,
-        },
-        transaction: options.transaction,
-      });
-    }
-
-    return undefined;
+    return UserMembership.findOrCreate({
+      where: {
+        collectionId: model.id,
+        userId: model.createdById,
+      },
+      defaults: {
+        permission: CollectionPermission.Admin,
+        createdById: model.createdById,
+      },
+      transaction: options.transaction,
+      hooks: false,
+    });
   }
 
   // associations
@@ -280,19 +351,27 @@ class Collection extends ParanoidModel {
   @Column(DataType.UUID)
   importId: string | null;
 
+  @BelongsTo(() => User, "archivedById")
+  archivedBy?: User | null;
+
+  @AllowNull
+  @ForeignKey(() => User)
+  @Column(DataType.UUID)
+  archivedById?: string | null;
+
   @HasMany(() => Document, "collectionId")
   documents: Document[];
 
-  @HasMany(() => CollectionUser, "collectionId")
-  memberships: CollectionUser[];
+  @HasMany(() => UserMembership, "collectionId")
+  memberships: UserMembership[];
 
-  @HasMany(() => CollectionGroup, "collectionId")
-  collectionGroupMemberships: CollectionGroup[];
+  @HasMany(() => GroupMembership, "collectionId")
+  groupMemberships: GroupMembership[];
 
-  @BelongsToMany(() => User, () => CollectionUser)
+  @BelongsToMany(() => User, () => UserMembership)
   users: User[];
 
-  @BelongsToMany(() => Group, () => CollectionGroup)
+  @BelongsToMany(() => Group, () => GroupMembership)
   groups: Group[];
 
   @BelongsTo(() => User, "createdById")
@@ -309,14 +388,15 @@ class Collection extends ParanoidModel {
   @Column(DataType.UUID)
   teamId: string;
 
-  static DEFAULT_SORT = {
-    field: "index",
-    direction: "asc",
-  };
+  static DEFAULT_SORT: { field: "title" | "index"; direction: "asc" | "desc" } =
+    {
+      field: "index",
+      direction: "asc",
+    };
 
   /**
    * Returns an array of unique userIds that are members of a collection,
-   * either via group or direct membership
+   * either via group or direct membership.
    *
    * @param collectionId
    * @returns userIds
@@ -325,13 +405,12 @@ class Collection extends ParanoidModel {
     const collection = await this.scope("withAllMemberships").findByPk(
       collectionId
     );
-
     if (!collection) {
       return [];
     }
 
-    const groupMemberships = collection.collectionGroupMemberships
-      .map((cgm) => cgm.group.groupMemberships)
+    const groupMemberships = collection.groupMemberships
+      .map((gm) => gm.group.groupUsers)
       .flat();
     const membershipUserIds = [
       ...groupMemberships,
@@ -344,33 +423,56 @@ class Collection extends ParanoidModel {
    * Overrides the standard findByPk behavior to allow also querying by urlId
    *
    * @param id uuid or urlId
-   * @returns collection instance
+   * @param options FindOptions
+   * @returns A promise resolving to a collection instance or null
    */
   static async findByPk(
     id: Identifier,
-    options: FindOptions<Collection> = {}
+    options?: NonNullFindOptions<Collection> & AdditionalFindOptions
+  ): Promise<Collection>;
+  static async findByPk(
+    id: Identifier,
+    options?: FindOptions<Collection> & AdditionalFindOptions
+  ): Promise<Collection | null>;
+  static async findByPk(
+    id: Identifier,
+    options: FindOptions<Collection> & AdditionalFindOptions = {}
   ): Promise<Collection | null> {
     if (typeof id !== "string") {
       return null;
     }
 
     if (isUUID(id)) {
-      return this.findOne({
+      const collection = await this.findOne({
         where: {
           id,
         },
         ...options,
+        rejectOnEmpty: false,
       });
+
+      if (!collection && options.rejectOnEmpty) {
+        throw new EmptyResultError(`Collection doesn't exist with id: ${id}`);
+      }
+
+      return collection;
     }
 
-    const match = id.match(SLUG_URL_REGEX);
+    const match = id.match(UrlHelper.SLUG_URL_REGEX);
     if (match) {
-      return this.findOne({
+      const collection = await this.findOne({
         where: {
           urlId: match[1],
         },
         ...options,
+        rejectOnEmpty: false,
       });
+
+      if (!collection && options.rejectOnEmpty) {
+        throw new EmptyResultError(`Collection doesn't exist with id: ${id}`);
+      }
+
+      return collection;
     }
 
     return null;
@@ -379,13 +481,18 @@ class Collection extends ParanoidModel {
   /**
    * Find the first collection that the specified user has access to.
    *
-   * @param user User object
+   * @param user User to find the collection for
+   * @param options Additional options for the query
    * @returns collection First collection in the sidebar order
    */
-  static async findFirstCollectionForUser(user: User) {
+  static async findFirstCollectionForUser(
+    user: User,
+    options: FindOptions = {}
+  ) {
     const id = await user.collectionIds();
     return this.findOne({
       where: {
+        teamId: user.teamId,
         id,
       },
       order: [
@@ -393,7 +500,19 @@ class Collection extends ParanoidModel {
         Sequelize.literal('"collection"."index" collate "C"'),
         ["updatedAt", "DESC"],
       ],
+      ...options,
     });
+  }
+
+  /**
+   * Convenience method to return if a collection is considered private.
+   * This means that a membership is required to view it rather than just being
+   * a workspace member.
+   *
+   * @returns boolean
+   */
+  get isPrivate() {
+    return !this.permission;
   }
 
   getDocumentTree = (documentId: string): NavigationNode | null => {
@@ -450,10 +569,11 @@ class Collection extends ParanoidModel {
           parentDocumentId: documentId,
         },
       });
-      childDocuments.forEach(async (child) => {
+
+      for (const child of childDocuments) {
         await loopChildren(child.id, opts);
         await child.destroy(opts);
-      });
+      }
     };
 
     await loopChildren(document.id, options);
@@ -477,12 +597,10 @@ class Collection extends ParanoidModel {
       id: string
     ) => {
       children = await Promise.all(
-        children.map(async (childDocument) => {
-          return {
-            ...childDocument,
-            children: await removeFromChildren(childDocument.children, id),
-          };
-        })
+        children.map(async (childDocument) => ({
+          ...childDocument,
+          children: await removeFromChildren(childDocument.children, id),
+        }))
       );
       const match = find(children, {
         id,
@@ -554,7 +672,7 @@ class Collection extends ParanoidModel {
    */
   updateDocument = async function (
     updatedDocument: Document,
-    options?: { transaction?: Transaction | null }
+    options?: { transaction?: Transaction | null | undefined }
   ) {
     if (!this.documentStructure) {
       return;
@@ -562,22 +680,23 @@ class Collection extends ParanoidModel {
 
     const { id } = updatedDocument;
 
-    const updateChildren = (documents: NavigationNode[]) => {
-      return documents.map((document) => {
-        if (document.id === id) {
-          document = {
-            ...(updatedDocument.toJSON() as NavigationNode),
-            children: document.children,
-          };
-        } else {
-          document.children = updateChildren(document.children);
-        }
+    const updateChildren = (documents: NavigationNode[]) =>
+      Promise.all(
+        documents.map(async (document) => {
+          if (document.id === id) {
+            document = {
+              ...(await updatedDocument.toNavigationNode(options)),
+              children: document.children,
+            };
+          } else {
+            document.children = await updateChildren(document.children);
+          }
 
-        return document;
-      });
-    };
+          return document;
+        })
+      );
 
-    this.documentStructure = updateChildren(this.documentStructure);
+    this.documentStructure = await updateChildren(this.documentStructure);
     // Sequelize doesn't seem to set the value with splice on JSONB field
     // https://github.com/sequelize/sequelize/blob/e1446837196c07b8ff0c23359b958d68af40fd6d/src/model.js#L3937
     this.changed("documentStructure", true);
@@ -595,14 +714,22 @@ class Collection extends ParanoidModel {
     options: FindOptions & {
       save?: boolean;
       documentJson?: NavigationNode;
+      includeArchived?: boolean;
     } = {}
   ) {
     if (!this.documentStructure) {
       this.documentStructure = [];
     }
 
+    if (this.getDocumentTree(document.id)) {
+      return this;
+    }
+
     // If moving existing document with children, use existing structure
-    const documentJson = { ...document.toJSON(), ...options.documentJson };
+    const documentJson = {
+      ...(await document.toNavigationNode(options)),
+      ...options.documentJson,
+    };
 
     if (!document.parentDocumentId) {
       // Note: Index is supported on DB level but it's being ignored
@@ -614,8 +741,8 @@ class Collection extends ParanoidModel {
       );
     } else {
       // Recursively place document
-      const placeDocument = (documentList: NavigationNode[]) => {
-        return documentList.map((childDocument) => {
+      const placeDocument = (documentList: NavigationNode[]) =>
+        documentList.map((childDocument) => {
           if (document.parentDocumentId === childDocument.id) {
             childDocument.children.splice(
               index !== undefined ? index : childDocument.children.length,
@@ -628,7 +755,6 @@ class Collection extends ParanoidModel {
 
           return childDocument;
         });
-      };
 
       this.documentStructure = placeDocument(this.documentStructure);
     }

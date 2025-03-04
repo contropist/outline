@@ -1,25 +1,29 @@
-import { yDocToProsemirrorJSON } from "@getoutline/y-prosemirror";
-import { uniq } from "lodash";
-import { Node } from "prosemirror-model";
+import isEqual from "fast-deep-equal";
+import uniq from "lodash/uniq";
+import { yDocToProsemirrorJSON } from "y-prosemirror";
 import * as Y from "yjs";
-import { sequelize } from "@server/database/sequelize";
-import { schema, serializer } from "@server/editor";
+import { ProsemirrorData } from "@shared/types";
 import Logger from "@server/logging/Logger";
 import { Document, Event } from "@server/models";
+import { sequelize } from "@server/storage/database";
+import { AuthenticationType } from "@server/types";
 
 type Props = {
-  /** The document ID to update */
+  /** The document ID to update. */
   documentId: string;
-  /** Current collaobrative state */
+  /** Current collaobrative state. */
   ydoc: Y.Doc;
-  /** The user ID that is performing the update, if known */
-  userId?: string;
+  /** The user IDs that have modified the document since it was last persisted. */
+  sessionCollaboratorIds: string[];
+  /** Whether the last connection to the document left. */
+  isLastConnection: boolean;
 };
 
 export default async function documentCollaborativeUpdater({
   documentId,
   ydoc,
-  userId,
+  sessionCollaboratorIds,
+  isLastConnection,
 }: Props) {
   return sequelize.transaction(async (transaction) => {
     const document = await Document.unscoped()
@@ -38,10 +42,11 @@ export default async function documentCollaborativeUpdater({
       });
 
     const state = Y.encodeStateAsUpdate(ydoc);
-    const node = Node.fromJSON(schema, yDocToProsemirrorJSON(ydoc, "default"));
-    const text = serializer.serialize(node, undefined);
-    const isUnchanged = document.text === text;
-    const lastModifiedById = userId ?? document.lastModifiedById;
+    const content = yDocToProsemirrorJSON(ydoc, "default") as ProsemirrorData;
+    const isUnchanged = isEqual(document.content, content);
+    const lastModifiedById =
+      sessionCollaboratorIds[sessionCollaboratorIds.length - 1] ??
+      document.lastModifiedById;
 
     if (isUnchanged) {
       return;
@@ -55,11 +60,15 @@ export default async function documentCollaborativeUpdater({
     // extract collaborators from doc user data
     const pud = new Y.PermanentUserData(ydoc);
     const pudIds = Array.from(pud.clients.values());
-    const collaboratorIds = uniq([...document.collaboratorIds, ...pudIds]);
+    const collaboratorIds = uniq([
+      ...document.collaboratorIds,
+      ...sessionCollaboratorIds,
+      ...pudIds,
+    ]);
 
     await document.update(
       {
-        text,
+        content,
         state: Buffer.from(state),
         lastModifiedById,
         collaboratorIds,
@@ -76,9 +85,11 @@ export default async function documentCollaborativeUpdater({
       collectionId: document.collectionId,
       teamId: document.teamId,
       actorId: lastModifiedById,
+      authType: AuthenticationType.APP,
       data: {
         multiplayer: true,
         title: document.title,
+        done: isLastConnection,
       },
     });
   });
