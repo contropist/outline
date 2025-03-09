@@ -1,4 +1,5 @@
 import emailProviders from "email-providers";
+import { InferAttributes, InferCreationAttributes } from "sequelize";
 import {
   Column,
   Table,
@@ -10,8 +11,8 @@ import {
   BeforeCreate,
 } from "sequelize-typescript";
 import { TeamValidation } from "@shared/validations";
+import env from "@server/env";
 import { ValidationError } from "@server/errors";
-import isCloudHosted from "@server/utils/isCloudHosted";
 import Team from "./Team";
 import User from "./User";
 import IdModel from "./base/IdModel";
@@ -21,9 +22,12 @@ import Length from "./validators/Length";
 
 @Table({ tableName: "team_domains", modelName: "team_domain" })
 @Fix
-class TeamDomain extends IdModel {
+class TeamDomain extends IdModel<
+  InferAttributes<TeamDomain>,
+  Partial<InferCreationAttributes<TeamDomain>>
+> {
   @NotIn({
-    args: isCloudHosted ? [emailProviders] : [],
+    args: env.isCloudHosted ? [emailProviders] : [],
     msg: "You chose a restricted domain, please try another.",
   })
   @NotEmpty
@@ -57,6 +61,10 @@ class TeamDomain extends IdModel {
 
   @BeforeCreate
   static async checkLimit(model: TeamDomain) {
+    if (!env.isCloudHosted) {
+      return;
+    }
+
     const count = await this.count({
       where: { teamId: model.teamId },
     });

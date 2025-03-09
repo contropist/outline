@@ -10,8 +10,10 @@ export default function SearchActions() {
   const { searches } = useStores();
 
   React.useEffect(() => {
-    if (!searches.isLoaded) {
-      searches.fetchPage({});
+    if (!searches.isLoaded && !searches.isFetching) {
+      void searches.fetchPage({
+        source: "app",
+      });
     }
   }, [searches]);
 
@@ -20,7 +22,8 @@ export default function SearchActions() {
   }));
 
   useCommandBarActions(
-    searchQuery ? [searchDocumentsForQuery(searchQuery)] : []
+    searchQuery ? [searchDocumentsForQuery(searchQuery)] : [],
+    [searchQuery]
   );
 
   useCommandBarActions(searches.recent.map(navigateToRecentSearchQuery));

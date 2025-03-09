@@ -4,26 +4,35 @@ import { useTranslation } from "react-i18next";
 import { MenuButton, useMenuState } from "reakit/Menu";
 import ContextMenu from "~/components/ContextMenu";
 import Template from "~/components/ContextMenu/Template";
-import { navigateToSettings, logout } from "~/actions/definitions/navigation";
-import { createTeam, switchTeamList } from "~/actions/definitions/teams";
-import useCurrentTeam from "~/hooks/useCurrentTeam";
+import {
+  navigateToWorkspaceSettings,
+  logout,
+} from "~/actions/definitions/navigation";
+import {
+  createTeam,
+  createTeamsList,
+  desktopLoginTeam,
+} from "~/actions/definitions/teams";
+import useActionContext from "~/hooks/useActionContext";
 import usePrevious from "~/hooks/usePrevious";
-import useSessions from "~/hooks/useSessions";
 import useStores from "~/hooks/useStores";
 import separator from "~/menus/separator";
 
-const OrganizationMenu: React.FC = ({ children }) => {
-  const [sessions] = useSessions();
+type Props = {
+  children?: React.ReactNode;
+};
+
+const OrganizationMenu: React.FC = ({ children }: Props) => {
   const menu = useMenuState({
     unstable_offset: [4, -4],
     placement: "bottom-start",
     modal: true,
   });
-  const { ui } = useStores();
-  const { theme } = ui;
-  const team = useCurrentTeam();
+  const stores = useStores();
+  const { theme } = stores.ui;
   const previousTheme = usePrevious(theme);
   const { t } = useTranslation();
+  const context = useActionContext({ isContextMenu: true });
 
   React.useEffect(() => {
     if (theme !== previousTheme) {
@@ -33,15 +42,17 @@ const OrganizationMenu: React.FC = ({ children }) => {
 
   // NOTE: it's useful to memoize on the team id and session because the action
   // menu is not cached at all.
-  const actions = React.useMemo(() => {
-    return [
-      ...switchTeamList,
+  const actions = React.useMemo(
+    () => [
+      ...createTeamsList(context),
       createTeam,
+      desktopLoginTeam,
       separator(),
-      navigateToSettings,
+      navigateToWorkspaceSettings,
       logout,
-    ];
-  }, [team.id, sessions]);
+    ],
+    [context]
+  );
 
   return (
     <>

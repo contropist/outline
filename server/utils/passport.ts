@@ -1,7 +1,9 @@
 import crypto from "crypto";
 import { addMinutes, subMinutes } from "date-fns";
-import fetch from "fetch-with-proxy";
 import type { Context } from "koa";
+// Allowed for trusted server<->server connections
+// eslint-disable-next-line no-restricted-imports
+import fetch from "node-fetch";
 import {
   StateStoreStoreCallback,
   StateStoreVerifyCallback,
@@ -10,7 +12,7 @@ import { Client } from "@shared/types";
 import { getCookieDomain, parseDomain } from "@shared/utils/domains";
 import env from "@server/env";
 import { Team } from "@server/models";
-import { OAuthStateMismatchError } from "../errors";
+import { InternalError, OAuthStateMismatchError } from "../errors";
 
 export class StateStore {
   key = "state";
@@ -27,9 +29,8 @@ export class StateStore {
     const state = buildState(host, token, client);
 
     ctx.cookies.set(this.key, state, {
-      httpOnly: false,
       expires: addMinutes(new Date(), 10),
-      domain: getCookieDomain(ctx.hostname),
+      domain: getCookieDomain(ctx.hostname, env.isCloudHosted),
     });
 
     callback(null, token);
@@ -54,9 +55,8 @@ export class StateStore {
 
     // Destroy the one-time pad token and ensure it matches
     ctx.cookies.set(this.key, "", {
-      httpOnly: false,
       expires: subMinutes(new Date(), 1),
-      domain: getCookieDomain(ctx.hostname),
+      domain: getCookieDomain(ctx.hostname, env.isCloudHosted),
     });
 
     if (!token || token !== providedToken) {
@@ -68,15 +68,27 @@ export class StateStore {
   };
 }
 
-export async function request(endpoint: string, accessToken: string) {
+export async function request(
+  method: "GET" | "POST",
+  endpoint: string,
+  accessToken: string
+) {
   const response = await fetch(endpoint, {
-    method: "GET",
+    method,
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
     },
   });
-  return response.json();
+  const text = await response.text();
+
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    throw InternalError(
+      `Failed to parse response from ${endpoint}. Expected JSON, got: ${text}`
+    );
+  }
 }
 
 function buildState(host: string, token: string, client?: Client) {
@@ -102,14 +114,20 @@ export async function getTeamFromContext(ctx: Context) {
   const domain = parseDomain(host);
 
   let team;
-  if (env.DEPLOYMENT !== "hosted") {
-    team = await Team.findOne();
+  if (!env.isCloudHosted) {
+    if (env.ENVIRONMENT === "test") {
+      team = await Team.findOne({ where: { domain: env.URL } });
+    } else {
+      team = await Team.findOne({
+        order: [["createdAt", "DESC"]],
+      });
+    }
+  } else if (ctx.state?.rootShare) {
+    team = await Team.findByPk(ctx.state.rootShare.teamId);
   } else if (domain.custom) {
     team = await Team.findOne({ where: { domain: domain.host } });
-  } else if (env.SUBDOMAINS_ENABLED && domain.teamSubdomain) {
-    team = await Team.findOne({
-      where: { subdomain: domain.teamSubdomain },
-    });
+  } else if (domain.teamSubdomain) {
+    team = await Team.findBySubdomain(domain.teamSubdomain);
   }
 
   return team;

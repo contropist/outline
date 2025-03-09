@@ -1,21 +1,27 @@
-import removeMarkdown from "@tommoor/remove-markdown";
-import { compact, uniq } from "lodash";
-import randomstring from "randomstring";
-import type { SaveOptions } from "sequelize";
+/* eslint-disable lines-between-class-members */
+import compact from "lodash/compact";
+import isNil from "lodash/isNil";
+import uniq from "lodash/uniq";
+import type {
+  Identifier,
+  InferAttributes,
+  InferCreationAttributes,
+  NonNullFindOptions,
+  SaveOptions,
+} from "sequelize";
 import {
-  Sequelize,
   Transaction,
   Op,
   FindOptions,
   ScopeOptions,
   WhereOptions,
+  EmptyResultError,
 } from "sequelize";
 import {
   ForeignKey,
   BelongsTo,
   Column,
   Default,
-  PrimaryKey,
   Table,
   BeforeValidate,
   BeforeCreate,
@@ -29,35 +35,49 @@ import {
   Length as SimpleLength,
   IsNumeric,
   IsDate,
+  AllowNull,
+  BelongsToMany,
+  Unique,
 } from "sequelize-typescript";
-import MarkdownSerializer from "slate-md-serializer";
 import isUUID from "validator/lib/isUUID";
-import getTasks from "@shared/utils/getTasks";
-import parseTitle from "@shared/utils/parseTitle";
-import unescape from "@shared/utils/unescape";
-import { SLUG_URL_REGEX } from "@shared/utils/urlHelpers";
+import type {
+  NavigationNode,
+  ProsemirrorData,
+  SourceMetadata,
+} from "@shared/types";
+import { ProsemirrorHelper } from "@shared/utils/ProsemirrorHelper";
+import { UrlHelper } from "@shared/utils/UrlHelper";
+import slugify from "@shared/utils/slugify";
 import { DocumentValidation } from "@shared/validations";
-import slugify from "@server/utils/slugify";
+import { ValidationError } from "@server/errors";
+import { generateUrlId } from "@server/utils/url";
 import Backlink from "./Backlink";
 import Collection from "./Collection";
 import FileOperation from "./FileOperation";
+import Group from "./Group";
+import GroupMembership from "./GroupMembership";
+import GroupUser from "./GroupUser";
 import Revision from "./Revision";
 import Star from "./Star";
 import Team from "./Team";
 import User from "./User";
+import UserMembership from "./UserMembership";
 import View from "./View";
-import ParanoidModel from "./base/ParanoidModel";
+import ArchivableModel from "./base/ArchivableModel";
 import Fix from "./decorators/Fix";
+import { DocumentHelper } from "./helpers/DocumentHelper";
+import IsHexColor from "./validators/IsHexColor";
 import Length from "./validators/Length";
-
-const serializer = new MarkdownSerializer();
 
 export const DOCUMENT_VERSION = 2;
 
+type AdditionalFindOptions = {
+  userId?: string;
+  includeState?: boolean;
+  rejectOnEmpty?: boolean | Error;
+};
+
 @DefaultScope(() => ({
-  attributes: {
-    exclude: ["state"],
-  },
   include: [
     {
       model: User,
@@ -74,36 +94,31 @@ export const DOCUMENT_VERSION = 2;
     publishedAt: {
       [Op.ne]: null,
     },
+    sourceMetadata: {
+      trial: {
+        [Op.is]: null,
+      },
+    },
+  },
+  attributes: {
+    exclude: ["state"],
   },
 }))
 @Scopes(() => ({
-  withCollectionPermissions: (userId: string, paranoid = true) => {
-    if (userId) {
-      return {
-        include: [
-          {
-            attributes: ["id", "permission", "sharing", "teamId", "deletedAt"],
-            model: Collection.scope({
+  withCollectionPermissions: (userId: string, paranoid = true) => ({
+    include: [
+      {
+        attributes: ["id", "permission", "sharing", "teamId", "deletedAt"],
+        model: userId
+          ? Collection.scope({
               method: ["withMembership", userId],
-            }),
-            as: "collection",
-            paranoid,
-          },
-        ],
-      };
-    }
-
-    return {
-      include: [
-        {
-          attributes: ["id", "permission", "sharing", "teamId", "deletedAt"],
-          model: Collection,
-          as: "collection",
-          paranoid,
-        },
-      ],
-    };
-  },
+            })
+          : Collection,
+        as: "collection",
+        paranoid,
+      },
+    ],
+  }),
   withoutState: {
     attributes: {
       exclude: ["state"],
@@ -117,17 +132,6 @@ export const DOCUMENT_VERSION = 2;
       },
     ],
   },
-  withStateIsEmpty: {
-    attributes: {
-      exclude: ["state"],
-      include: [
-        [
-          Sequelize.literal(`CASE WHEN state IS NULL THEN true ELSE false END`),
-          "stateIsEmpty",
-        ],
-      ],
-    },
-  },
   withState: {
     attributes: {
       // resets to include the state column
@@ -137,13 +141,11 @@ export const DOCUMENT_VERSION = 2;
   withDrafts: {
     include: [
       {
-        model: User,
-        as: "createdBy",
+        association: "createdBy",
         paranoid: false,
       },
       {
-        model: User,
-        as: "updatedBy",
+        association: "updatedBy",
         paranoid: false,
       },
     ],
@@ -166,16 +168,98 @@ export const DOCUMENT_VERSION = 2;
       ],
     };
   },
+  withMembership: (userId: string) => {
+    if (!userId) {
+      return {};
+    }
+
+    return {
+      include: [
+        {
+          association: "memberships",
+          where: {
+            userId,
+          },
+          required: false,
+        },
+        {
+          association: "groupMemberships",
+          required: false,
+          // use of "separate" property: sequelize breaks when there are
+          // nested "includes" with alternating values for "required"
+          // see https://github.com/sequelize/sequelize/issues/9869
+          separate: true,
+          // include for groups that are members of this document,
+          // of which userId is a member of, resulting in:
+          // GroupMembership [inner join] Group [inner join] GroupUser [where] userId
+          include: [
+            {
+              model: Group,
+              as: "group",
+              required: true,
+              include: [
+                {
+                  model: GroupUser,
+                  as: "groupUsers",
+                  required: true,
+                  where: {
+                    userId,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+  },
+  withAllMemberships: {
+    include: [
+      {
+        association: "memberships",
+        required: false,
+      },
+      {
+        model: GroupMembership,
+        as: "groupMemberships",
+        required: false,
+        // use of "separate" property: sequelize breaks when there are
+        // nested "includes" with alternating values for "required"
+        // see https://github.com/sequelize/sequelize/issues/9869
+        separate: true,
+        // include for groups that are members of this collection,
+        // of which userId is a member of, resulting in:
+        // CollectionGroup [inner join] Group [inner join] GroupUser [where] userId
+        include: [
+          {
+            model: Group,
+            as: "group",
+            required: true,
+            include: [
+              {
+                model: GroupUser,
+                as: "groupUsers",
+                required: true,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  },
 }))
 @Table({ tableName: "documents", modelName: "document" })
 @Fix
-class Document extends ParanoidModel {
+class Document extends ArchivableModel<
+  InferAttributes<Document>,
+  Partial<InferCreationAttributes<Document>>
+> {
   @SimpleLength({
     min: 10,
     max: 10,
     msg: `urlId must be 10 characters`,
   })
-  @PrimaryKey
+  @Unique
   @Column
   urlId: string;
 
@@ -186,19 +270,32 @@ class Document extends ParanoidModel {
   @Column
   title: string;
 
+  @Length({
+    max: DocumentValidation.maxSummaryLength,
+    msg: `Document summary must be ${DocumentValidation.maxSummaryLength} characters or less`,
+  })
+  @Column
+  summary: string;
+
   @Column(DataType.ARRAY(DataType.STRING))
   previousTitles: string[] = [];
 
   @IsNumeric
   @Column(DataType.SMALLINT)
-  version: number;
+  version?: number | null;
 
+  @Default(false)
   @Column
   template: boolean;
 
+  @Default(false)
   @Column
   fullWidth: boolean;
 
+  @Column
+  insightsEnabled: boolean;
+
+  /** The version of the editor last used to edit this document. */
   @SimpleLength({
     max: 255,
     msg: `editorVersion must be 255 characters or less`,
@@ -206,46 +303,78 @@ class Document extends ParanoidModel {
   @Column
   editorVersion: string;
 
+  /** An icon to use as the document icon. */
   @Length({
-    max: 1,
-    msg: `Emoji must be a single character`,
+    max: 50,
+    msg: `icon must be 50 characters or less`,
   })
   @Column
-  emoji: string | null;
+  icon: string | null;
 
+  /** The color of the icon. */
+  @IsHexColor
+  @Column
+  color: string | null;
+
+  /**
+   * The content of the document as Markdown.
+   *
+   * @deprecated Use `content` instead, or `DocumentHelper.toMarkdown` if exporting lossy markdown.
+   * This column will be removed in a future migration.
+   */
   @Column(DataType.TEXT)
   text: string;
 
+  /**
+   * The content of the document as JSON, this is a snapshot at the last time the state was saved.
+   */
+  @Column(DataType.JSONB)
+  content: ProsemirrorData | null;
+
+  /**
+   * The content of the document as YJS collaborative state, this column can be quite large and
+   * should only be selected from the DB when the `content` snapshot cannot be used.
+   */
   @SimpleLength({
     max: DocumentValidation.maxStateLength,
     msg: `Document collaborative state is too large, you must create a new document`,
   })
   @Column(DataType.BLOB)
-  state: Uint8Array;
+  state?: Uint8Array | null;
 
+  /** Whether this document is part of onboarding. */
   @Default(false)
   @Column
   isWelcome: boolean;
 
+  /** How many versions there are in the history of this document. */
   @IsNumeric
   @Default(0)
   @Column(DataType.INTEGER)
   revisionCount: number;
 
-  @IsDate
-  @Column
-  archivedAt: Date | null;
-
+  /** Whether the document is published, and if so when. */
   @IsDate
   @Column
   publishedAt: Date | null;
 
+  /** An array of user IDs that have edited this document. */
   @Column(DataType.ARRAY(DataType.UUID))
   collaboratorIds: string[] = [];
 
   // getters
 
+  /**
+   * The frontend path to this document.
+   *
+   * @deprecated Use `path` instead.
+   */
   get url() {
+    return this.path;
+  }
+
+  /** The frontend path to this document. */
+  get path() {
     if (!this.title) {
       return `/doc/untitled-${this.urlId}`;
     }
@@ -254,15 +383,24 @@ class Document extends ParanoidModel {
   }
 
   get tasks() {
-    return getTasks(this.text || "");
+    return ProsemirrorHelper.getTasksSummary(
+      DocumentHelper.toProsemirror(this)
+    );
+  }
+
+  static getPath({ title, urlId }: { title: string; urlId: string }) {
+    if (!title.length) {
+      return `/doc/untitled-${urlId}`;
+    }
+    return `/doc/${slugify(title)}-${urlId}`;
   }
 
   // hooks
 
   @BeforeSave
-  static async updateTitleInCollectionStructure(
+  static async updateCollectionStructure(
     model: Document,
-    { transaction }: SaveOptions<Document>
+    { transaction }: SaveOptions<InferAttributes<Document>>
   ) {
     // templates, drafts, and archived documents don't appear in the structure
     // and so never need to be updated when the title changes
@@ -270,7 +408,12 @@ class Document extends ParanoidModel {
       model.archivedAt ||
       model.template ||
       !model.publishedAt ||
-      !model.changed("title")
+      !(
+        model.changed("title") ||
+        model.changed("icon") ||
+        model.changed("color")
+      ) ||
+      !model.collectionId
     ) {
       return;
     }
@@ -289,12 +432,17 @@ class Document extends ParanoidModel {
 
   @AfterCreate
   static async addDocumentToCollectionStructure(model: Document) {
-    if (model.archivedAt || model.template || !model.publishedAt) {
+    if (
+      model.archivedAt ||
+      model.template ||
+      !model.publishedAt ||
+      !model.collectionId
+    ) {
       return;
     }
 
     return this.sequelize!.transaction(async (transaction: Transaction) => {
-      const collection = await Collection.findByPk(model.collectionId, {
+      const collection = await Collection.findByPk(model.collectionId!, {
         transaction,
         lock: transaction.LOCK.UPDATE,
       });
@@ -309,7 +457,7 @@ class Document extends ParanoidModel {
 
   @BeforeValidate
   static createUrlId(model: Document) {
-    return (model.urlId = model.urlId || randomstring.generate(10));
+    return (model.urlId = model.urlId || generateUrlId());
   }
 
   @BeforeCreate
@@ -322,22 +470,17 @@ class Document extends ParanoidModel {
   }
 
   @BeforeUpdate
-  static processUpdate(model: Document) {
-    const { emoji } = parseTitle(model.title);
-    // emoji in the title is split out for easier display
-    model.emoji = emoji || null;
-
+  static async processUpdate(model: Document) {
     // ensure documents have a title
     model.title = model.title || "";
 
-    if (model.previous("title") && model.previous("title") !== model.title) {
+    const previousTitle = model.previous("title");
+    if (previousTitle && previousTitle !== model.title) {
       if (!model.previousTitles) {
         model.previousTitles = [];
       }
 
-      model.previousTitles = uniq(
-        model.previousTitles.concat(model.previous("title"))
-      );
+      model.previousTitles = uniq(model.previousTitles.concat(previousTitle));
     }
 
     // add the current user as a collaborator on this doc
@@ -345,12 +488,44 @@ class Document extends ParanoidModel {
       model.collaboratorIds = [];
     }
 
+    // backfill content if it's missing
+    if (!model.content) {
+      model.content = await DocumentHelper.toJSON(model);
+    }
+
+    // ensure the last modifying user is a collaborator
     model.collaboratorIds = uniq(
       model.collaboratorIds.concat(model.lastModifiedById)
     );
 
     // increment revision
     model.revisionCount += 1;
+  }
+
+  @BeforeUpdate
+  static async checkParentDocument(model: Document, options: SaveOptions) {
+    if (
+      model.previous("parentDocumentId") === model.parentDocumentId ||
+      !model.parentDocumentId
+    ) {
+      return;
+    }
+
+    if (model.parentDocumentId === model.id) {
+      throw ValidationError(
+        "infinite loop detected, cannot nest a document inside itself"
+      );
+    }
+
+    const childDocumentIds = await model.findAllChildDocumentIds(
+      undefined,
+      options
+    );
+    if (childDocumentIds.includes(model.parentDocumentId)) {
+      throw ValidationError(
+        "infinite loop detected, cannot nest a document inside itself"
+      );
+    }
   }
 
   // associations
@@ -361,6 +536,10 @@ class Document extends ParanoidModel {
   @ForeignKey(() => FileOperation)
   @Column(DataType.UUID)
   importId: string | null;
+
+  @AllowNull
+  @Column(DataType.JSONB)
+  sourceMetadata: SourceMetadata | null;
 
   @BelongsTo(() => Document, "parentDocumentId")
   parentDocument: Document | null;
@@ -398,11 +577,20 @@ class Document extends ParanoidModel {
   teamId: string;
 
   @BelongsTo(() => Collection, "collectionId")
-  collection: Collection | null | undefined;
+  collection: Collection | null;
+
+  @BelongsToMany(() => User, () => UserMembership)
+  users: User[];
 
   @ForeignKey(() => Collection)
   @Column(DataType.UUID)
-  collectionId: string;
+  collectionId?: string | null;
+
+  @HasMany(() => UserMembership)
+  memberships: UserMembership[];
+
+  @HasMany(() => GroupMembership, "documentId")
+  groupMemberships: GroupMembership[];
 
   @HasMany(() => Revision)
   revisions: Revision[];
@@ -416,6 +604,31 @@ class Document extends ParanoidModel {
   @HasMany(() => View)
   views: View[];
 
+  /**
+   * Returns an array of unique userIds that are members of a document
+   * either via group or direct membership.
+   *
+   * @param documentId
+   * @returns userIds
+   */
+  static async membershipUserIds(documentId: string) {
+    const document = await this.scope("withAllMemberships").findOne({
+      where: { id: documentId },
+    });
+    if (!document) {
+      return [];
+    }
+
+    const groupMemberships = document.groupMemberships
+      .map((gm) => gm.group.groupUsers)
+      .flat();
+    const membershipUserIds = [
+      ...groupMemberships,
+      ...document.memberships,
+    ].map((membership) => membership.userId);
+    return uniq(membershipUserIds);
+  }
+
   static defaultScopeWithUser(userId: string) {
     const collectionScope: Readonly<ScopeOptions> = {
       method: ["withCollectionPermissions", userId],
@@ -423,87 +636,207 @@ class Document extends ParanoidModel {
     const viewScope: Readonly<ScopeOptions> = {
       method: ["withViews", userId],
     };
-    return this.scope(["defaultScope", collectionScope, viewScope]);
+    const membershipScope: Readonly<ScopeOptions> = {
+      method: ["withMembership", userId],
+    };
+    return this.scope([
+      "defaultScope",
+      collectionScope,
+      viewScope,
+      membershipScope,
+    ]);
   }
 
+  /**
+   * Overrides the standard findByPk behavior to allow also querying by urlId
+   *
+   * @param id uuid or urlId
+   * @param options FindOptions
+   * @returns A promise resolving to a collection instance or null
+   */
   static async findByPk(
-    id: string,
-    options: FindOptions<Document> & {
-      userId?: string;
-      includeState?: boolean;
-    } = {}
+    id: Identifier,
+    options?: NonNullFindOptions<Document> & AdditionalFindOptions
+  ): Promise<Document>;
+  static async findByPk(
+    id: Identifier,
+    options?: FindOptions<Document> & AdditionalFindOptions
+  ): Promise<Document | null>;
+  static async findByPk(
+    id: Identifier,
+    options: (NonNullFindOptions<Document> | FindOptions<Document>) &
+      AdditionalFindOptions = {}
   ): Promise<Document | null> {
+    if (typeof id !== "string") {
+      return null;
+    }
+
+    const { includeState, userId, ...rest } = options;
+
     // allow default preloading of collection membership if `userId` is passed in find options
     // almost every endpoint needs the collection membership to determine policy permissions.
     const scope = this.scope([
-      ...(options.includeState ? [] : ["withoutState"]),
       "withDrafts",
       {
-        method: ["withCollectionPermissions", options.userId, options.paranoid],
+        method: ["withCollectionPermissions", userId, rest.paranoid],
       },
       {
-        method: ["withViews", options.userId],
+        method: ["withViews", userId],
+      },
+      {
+        method: ["withMembership", userId],
       },
     ]);
 
     if (isUUID(id)) {
-      return scope.findOne({
+      const document = await scope.findOne({
         where: {
           id,
         },
-        ...options,
+        ...rest,
+        rejectOnEmpty: false,
       });
+
+      if (!document && rest.rejectOnEmpty) {
+        throw new EmptyResultError(`Document doesn't exist with id: ${id}`);
+      }
+
+      return document;
     }
 
-    const match = id.match(SLUG_URL_REGEX);
+    const match = id.match(UrlHelper.SLUG_URL_REGEX);
     if (match) {
-      return scope.findOne({
+      const document = await scope.findOne({
         where: {
           urlId: match[1],
         },
-        ...options,
+        ...rest,
+        rejectOnEmpty: false,
       });
+
+      if (!document && rest.rejectOnEmpty) {
+        throw new EmptyResultError(`Document doesn't exist with id: ${id}`);
+      }
+
+      return document;
     }
 
     return null;
   }
 
+  /**
+   * Find many documents by their id, supports filtering by user memberships when `userId`
+   * is specified in the options.
+   *
+   * @param ids An array of document ids
+   * @param options FindOptions
+   * @returns A promise resolving to the list of documents
+   */
+  static async findByIds(
+    ids: string[],
+    options: Omit<FindOptions<Document>, "where"> &
+      Omit<AdditionalFindOptions, "rejectOnEmpty"> = {}
+  ): Promise<Document[]> {
+    const { userId, ...rest } = options;
+
+    const user = userId ? await User.findByPk(userId) : null;
+    const documents = await this.scope([
+      "withDrafts",
+      {
+        method: ["withCollectionPermissions", userId, rest.paranoid],
+      },
+      {
+        method: ["withViews", userId],
+      },
+      {
+        method: ["withMembership", userId],
+      },
+    ]).findAll({
+      where: {
+        ...(user && { teamId: user.teamId }),
+        id: ids,
+      },
+      ...rest,
+    });
+
+    if (!userId) {
+      return documents;
+    }
+
+    return documents.filter(
+      (doc) =>
+        (!doc.collection?.isPrivate && !user?.isGuest) ||
+        (doc.collection?.memberships.length || 0) > 0 ||
+        (doc.collection?.groupMemberships.length || 0) > 0 ||
+        doc.memberships.length > 0 ||
+        doc.groupMemberships.length > 0
+    );
+  }
+
   // instance methods
 
-  migrateVersion = () => {
-    let migrated = false;
+  /**
+   * Whether this document is considered active or not. A document is active if
+   * it has not been archived or deleted.
+   *
+   * @returns boolean
+   */
+  get isActive(): boolean {
+    return !this.archivedAt && !this.deletedAt;
+  }
 
-    // migrate from document version 0 -> 1
-    if (!this.version) {
-      // removing the title from the document text attribute
-      this.text = this.text.replace(/^#\s(.*)\n/, "");
-      this.version = 1;
-      migrated = true;
-    }
+  /**
+   * Convenience method that returns whether this document is a draft.
+   *
+   * @returns boolean
+   */
+  get isDraft(): boolean {
+    return !this.publishedAt;
+  }
 
-    // migrate from document version 1 -> 2
-    if (this.version === 1) {
-      const nodes = serializer.deserialize(this.text);
-      this.text = serializer.serialize(nodes, {
-        version: 2,
-      });
-      this.version = 2;
-      migrated = true;
-    }
-
-    if (migrated) {
-      return this.save({
-        silent: true,
-        hooks: false,
-      });
-    }
-
-    return undefined;
-  };
-
+  /**
+   * Returns the title of the document or a default if the document is untitled.
+   *
+   * @returns boolean
+   */
   get titleWithDefault(): string {
     return this.title || "Untitled";
   }
+
+  /**
+   * Whether this document was imported during a trial period.
+   *
+   * @returns boolean
+   */
+  get isTrialImport() {
+    return !!(this.importId && this.sourceMetadata?.trial);
+  }
+
+  /**
+   * Returns whether this document is a template created at the workspace level.
+   */
+  get isWorkspaceTemplate() {
+    return this.template && !this.collectionId;
+  }
+
+  /**
+   * Revert the state of the document to match the passed revision.
+   *
+   * @param revision The revision to revert to.
+   */
+  restoreFromRevision = (revision: Revision) => {
+    if (revision.documentId !== this.id) {
+      throw new Error("Revision does not belong to this document");
+    }
+
+    this.content = revision.content;
+    this.text = DocumentHelper.toMarkdown(revision, {
+      includeTitle: false,
+    });
+    this.title = revision.title;
+    this.icon = revision.icon;
+    this.color = revision.color;
+  };
 
   /**
    * Get a list of users that have collaborated on this document
@@ -511,33 +844,51 @@ class Document extends ParanoidModel {
    * @param options FindOptions
    * @returns A promise that resolve to a list of users
    */
-  collaborators = async (options?: FindOptions<User>): Promise<User[]> => {
-    const users = await Promise.all(
-      this.collaboratorIds.map((collaboratorId) =>
-        User.findByPk(collaboratorId, options)
-      )
-    );
+  collaborators = async (options?: FindOptions<User>): Promise<User[]> =>
+    await User.findAll({
+      ...options,
+      where: {
+        ...options?.where,
+        id: this.collaboratorIds,
+      },
+    });
 
-    return compact(users);
-  };
+  /**
+   * Find all of the child documents for this document
+   *
+   * @param options FindOptions
+   * @returns A promise that resolve to a list of documents
+   */
+  findChildDocuments = async (
+    where?: Omit<WhereOptions<Document>, "parentDocumentId">,
+    options?: FindOptions<Document>
+  ): Promise<Document[]> =>
+    await (this.constructor as typeof Document).findAll({
+      where: {
+        parentDocumentId: this.id,
+        ...where,
+      },
+      ...options,
+    });
 
   /**
    * Calculate all of the document ids that are children of this document by
-   * iterating through parentDocumentId references in the most efficient way.
+   * recursively iterating through parentDocumentId references in the most efficient way.
    *
    * @param where query options to further filter the documents
    * @param options FindOptions
    * @returns A promise that resolves to a list of document ids
    */
-  getChildDocumentIds = async (
+  findAllChildDocumentIds = async (
     where?: Omit<WhereOptions<Document>, "parentDocumentId">,
     options?: FindOptions<Document>
   ): Promise<string[]> => {
-    const getChildDocumentIds = async (
+    const findAllChildDocumentIds = async (
       ...parentDocumentId: string[]
     ): Promise<string[]> => {
-      const childDocuments = await (this
-        .constructor as typeof Document).findAll({
+      const childDocuments = await (
+        this.constructor as typeof Document
+      ).findAll({
         attributes: ["id"],
         where: {
           parentDocumentId,
@@ -551,52 +902,34 @@ class Document extends ParanoidModel {
       if (childDocumentIds.length > 0) {
         return [
           ...childDocumentIds,
-          ...(await getChildDocumentIds(...childDocumentIds)),
+          ...(await findAllChildDocumentIds(...childDocumentIds)),
         ];
       }
 
       return childDocumentIds;
     };
 
-    return getChildDocumentIds(this.id);
+    return findAllChildDocumentIds(this.id);
   };
 
-  archiveWithChildren = async (
-    userId: string,
-    options?: FindOptions<Document>
-  ) => {
-    const archivedAt = new Date();
+  publish = async (
+    user: User,
+    collectionId: string | null | undefined,
+    options: SaveOptions
+  ): Promise<this> => {
+    const { transaction } = options;
 
-    // Helper to archive all child documents for a document
-    const archiveChildren = async (parentDocumentId: string) => {
-      const childDocuments = await (this
-        .constructor as typeof Document).findAll({
-        where: {
-          parentDocumentId,
-        },
-      });
-      childDocuments.forEach(async (child) => {
-        await archiveChildren(child.id);
-        child.archivedAt = archivedAt;
-        child.lastModifiedById = userId;
-        await child.save(options);
-      });
-    };
-
-    await archiveChildren(this.id);
-    this.archivedAt = archivedAt;
-    this.lastModifiedById = userId;
-    return this.save(options);
-  };
-
-  publish = async (userId: string, { transaction }: SaveOptions<Document>) => {
     // If the document is already published then calling publish should act like
     // a regular save
     if (this.publishedAt) {
-      return this.save({ transaction });
+      return this.save(options);
     }
 
-    if (!this.template) {
+    if (!this.collectionId) {
+      this.collectionId = collectionId;
+    }
+
+    if (!this.template && this.collectionId) {
       const collection = await Collection.findByPk(this.collectionId, {
         transaction,
         lock: Transaction.LOCK.UPDATE,
@@ -604,111 +937,179 @@ class Document extends ParanoidModel {
 
       if (collection) {
         await collection.addDocumentToStructure(this, 0, { transaction });
-        this.collection = collection;
+        if (this.collection) {
+          this.collection.documentStructure = collection.documentStructure;
+        }
       }
     }
 
-    this.lastModifiedById = userId;
+    // Copy the group and user memberships from the parent document, if any
+    if (this.parentDocumentId) {
+      await GroupMembership.copy(
+        {
+          documentId: this.parentDocumentId,
+        },
+        this,
+        { transaction }
+      );
+      await UserMembership.copy(
+        {
+          documentId: this.parentDocumentId,
+        },
+        this,
+        { transaction }
+      );
+    }
+
+    this.lastModifiedById = user.id;
+    this.updatedBy = user;
     this.publishedAt = new Date();
-    return this.save({ transaction });
+    return this.save(options);
   };
 
-  unpublish = async (userId: string) => {
-    // If the document is already a draft then calling unpublish should act like
-    // a regular save
+  isCollectionDeleted = async () => {
+    if (this.deletedAt || this.archivedAt) {
+      if (this.collectionId) {
+        const collection =
+          this.collection ??
+          (await Collection.findByPk(this.collectionId, {
+            attributes: ["deletedAt"],
+            paranoid: false,
+          }));
+
+        return !!collection?.deletedAt;
+      }
+    }
+    return false;
+  };
+
+  /**
+   *
+   * @param user User who is performing the action
+   * @param options.detach Whether to detach the document from the containing collection
+   * @returns Updated document
+   */
+  unpublish = async (user: User, options: { detach: boolean }) => {
+    // If the document is already a draft then calling unpublish should act like save
     if (!this.publishedAt) {
       return this.save();
     }
 
     await this.sequelize.transaction(async (transaction: Transaction) => {
-      const collection = await Collection.findByPk(this.collectionId, {
-        transaction,
-        lock: transaction.LOCK.UPDATE,
-      });
+      const collection = this.collectionId
+        ? await Collection.findByPk(this.collectionId, {
+            transaction,
+            lock: transaction.LOCK.UPDATE,
+          })
+        : undefined;
 
       if (collection) {
         await collection.removeDocumentInStructure(this, { transaction });
-        this.collection = collection;
+        if (this.collection) {
+          this.collection.documentStructure = collection.documentStructure;
+        }
       }
     });
 
     // unpublishing a document converts the ownership to yourself, so that it
     // will appear in your drafts rather than the original creators
-    this.createdById = userId;
-    this.lastModifiedById = userId;
+    this.createdById = user.id;
+    this.lastModifiedById = user.id;
+    this.createdBy = user;
+    this.updatedBy = user;
     this.publishedAt = null;
+
+    if (options.detach) {
+      this.collectionId = null;
+    }
+
     return this.save();
   };
 
   // Moves a document from being visible to the team within a collection
   // to the archived area, where it can be subsequently restored.
-  archive = async (userId: string) => {
-    await this.sequelize.transaction(async (transaction: Transaction) => {
-      const collection = await Collection.findByPk(this.collectionId, {
-        transaction,
-        lock: transaction.LOCK.UPDATE,
-      });
+  archive = async (user: User, options?: FindOptions) => {
+    const { transaction } = { ...options };
+    const collection = this.collectionId
+      ? await Collection.findByPk(this.collectionId, {
+          transaction,
+          lock: transaction?.LOCK.UPDATE,
+        })
+      : undefined;
 
-      if (collection) {
-        await collection.removeDocumentInStructure(this, { transaction });
-        this.collection = collection;
+    if (collection) {
+      await collection.removeDocumentInStructure(this, { transaction });
+      if (this.collection) {
+        this.collection.documentStructure = collection.documentStructure;
       }
-    });
+    }
 
-    await this.archiveWithChildren(userId);
+    await this.archiveWithChildren(user, { transaction });
     return this;
   };
 
   // Restore an archived document back to being visible to the team
-  unarchive = async (userId: string) => {
-    await this.sequelize.transaction(async (transaction: Transaction) => {
-      const collection = await Collection.findByPk(this.collectionId, {
-        transaction,
-        lock: transaction.LOCK.UPDATE,
-      });
-
-      // check to see if the documents parent hasn't been archived also
-      // If it has then restore the document to the collection root.
-      if (this.parentDocumentId) {
-        const parent = await (this.constructor as typeof Document).findOne({
-          where: {
-            id: this.parentDocumentId,
-            archivedAt: {
-              [Op.is]: null,
-            },
-          },
-        });
-        if (!parent) {
-          this.parentDocumentId = null;
-        }
-      }
-
-      if (!this.template && collection) {
-        await collection.addDocumentToStructure(this, undefined, {
+  restoreTo = async (
+    collectionId: string,
+    options: FindOptions & { user: User }
+  ) => {
+    const { transaction } = { ...options };
+    const collection = collectionId
+      ? await Collection.findByPk(collectionId, {
           transaction,
-        });
-        this.collection = collection;
-      }
-    });
+          lock: transaction?.LOCK.UPDATE,
+        })
+      : undefined;
 
-    if (this.deletedAt) {
-      await this.restore();
+    // check to see if the documents parent hasn't been archived also
+    // If it has then restore the document to the collection root.
+    if (this.parentDocumentId) {
+      const parent = await (this.constructor as typeof Document).findOne({
+        where: {
+          id: this.parentDocumentId,
+        },
+        transaction,
+      });
+      if (parent?.isDraft || !parent?.isActive) {
+        this.parentDocumentId = null;
+      }
     }
 
-    this.archivedAt = null;
-    this.lastModifiedById = userId;
-    await this.save();
+    if (!this.template && this.publishedAt && collection?.isActive) {
+      await collection.addDocumentToStructure(this, undefined, {
+        includeArchived: true,
+        transaction,
+      });
+    }
+
+    if (this.deletedAt) {
+      await this.restore({ transaction });
+      this.collectionId = collectionId;
+      await this.save({ transaction });
+    }
+
+    if (this.archivedAt) {
+      await this.restoreWithChildren(collectionId, options.user, {
+        transaction,
+      });
+    }
+
+    if (this.collection && collection) {
+      // updating the document structure in memory just in case it's later accessed somewhere
+      this.collection.documentStructure = collection.documentStructure;
+    }
     return this;
   };
 
   // Delete a document, archived or otherwise.
-  delete = (userId: string) => {
-    return this.sequelize.transaction(async (transaction: Transaction) => {
+  delete = (user: User) =>
+    this.sequelize.transaction(async (transaction: Transaction) => {
       if (!this.archivedAt && !this.template && this.collectionId) {
         // delete any children and remove from the document structure
         const collection = await Collection.findByPk(this.collectionId, {
           transaction,
           lock: transaction.LOCK.UPDATE,
+          paranoid: false,
         });
         await collection?.deleteDocument(this, { transaction });
       } else {
@@ -717,33 +1118,20 @@ class Document extends ParanoidModel {
         });
       }
 
-      await Revision.destroy({
-        where: {
-          documentId: this.id,
-        },
-        transaction,
-      });
-      await this.update(
-        {
-          lastModifiedById: userId,
-        },
-        {
-          transaction,
-        }
-      );
-      return this;
+      this.lastModifiedById = user.id;
+      this.updatedBy = user;
+      return this.save({ transaction });
     });
-  };
 
-  getTimestamp = () => {
-    return Math.round(new Date(this.updatedAt).getTime() / 1000);
-  };
+  getTimestamp = () => Math.round(new Date(this.updatedAt).getTime() / 1000);
 
   getSummary = () => {
-    const plain = removeMarkdown(unescape(this.text), {
-      stripHTML: false,
-    });
-    const lines = compact(plain.split("\n"));
+    if (this.summary) {
+      return this.summary;
+    }
+
+    const plainText = DocumentHelper.toPlainText(this);
+    const lines = compact(plainText.split("\n"));
     const notEmpty = lines.length >= 1;
 
     if (this.version) {
@@ -753,15 +1141,117 @@ class Document extends ParanoidModel {
     return notEmpty ? lines[1] : "";
   };
 
-  toJSON = () => {
-    // Warning: only use for new documents as order of children is
-    // handled in the collection's documentStructure
+  /**
+   * Returns a JSON representation of the document suitable for use in the
+   * collection documentStructure.
+   *
+   * @param options Optional transaction to use for the query
+   * @returns Promise resolving to a NavigationNode
+   */
+  toNavigationNode = async (
+    options?: FindOptions<Document> & { includeArchived?: boolean }
+  ): Promise<NavigationNode> => {
+    // Checking if the record is new is a performance optimization – new docs cannot have children
+    const childDocuments = this.isNewRecord
+      ? []
+      : await (this.constructor as typeof Document).unscoped().findAll({
+          where: options?.includeArchived
+            ? {
+                teamId: this.teamId,
+                parentDocumentId: this.id,
+                publishedAt: {
+                  [Op.ne]: null,
+                },
+              }
+            : {
+                teamId: this.teamId,
+                parentDocumentId: this.id,
+                publishedAt: {
+                  [Op.ne]: null,
+                },
+                archivedAt: {
+                  [Op.is]: null,
+                },
+              },
+          transaction: options?.transaction,
+        });
+
+    const children = await Promise.all(
+      childDocuments.map((child) => child.toNavigationNode(options))
+    );
+
     return {
       id: this.id,
       title: this.title,
       url: this.url,
-      children: [],
+      icon: isNil(this.icon) ? undefined : this.icon,
+      color: isNil(this.color) ? undefined : this.color,
+      children,
     };
+  };
+
+  private restoreWithChildren = async (
+    collectionId: string,
+    user: User,
+    options?: FindOptions<Document>
+  ) => {
+    const restoreChildren = async (parentDocumentId: string) => {
+      const childDocuments = await (
+        this.constructor as typeof Document
+      ).findAll({
+        where: {
+          parentDocumentId,
+        },
+        ...options,
+      });
+      for (const child of childDocuments) {
+        await restoreChildren(child.id);
+        child.archivedAt = null;
+        child.lastModifiedById = user.id;
+        child.updatedBy = user;
+        child.collectionId = collectionId;
+        await child.save(options);
+      }
+    };
+
+    await restoreChildren(this.id);
+    this.archivedAt = null;
+    this.lastModifiedById = user.id;
+    this.updatedBy = user;
+    this.collectionId = collectionId;
+    return this.save(options);
+  };
+
+  private archiveWithChildren = async (
+    user: User,
+    options?: FindOptions<Document>
+  ) => {
+    const archivedAt = new Date();
+
+    // Helper to archive all child documents for a document
+    const archiveChildren = async (parentDocumentId: string) => {
+      const childDocuments = await (
+        this.constructor as typeof Document
+      ).findAll({
+        where: {
+          parentDocumentId,
+        },
+        ...options,
+      });
+      for (const child of childDocuments) {
+        await archiveChildren(child.id);
+        child.archivedAt = archivedAt;
+        child.lastModifiedById = user.id;
+        child.updatedBy = user;
+        await child.save(options);
+      }
+    };
+
+    await archiveChildren(this.id);
+    this.archivedAt = archivedAt;
+    this.lastModifiedById = user.id;
+    this.updatedBy = user;
+    return this.save(options);
   };
 }
 

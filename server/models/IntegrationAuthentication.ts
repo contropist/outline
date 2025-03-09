@@ -1,3 +1,4 @@
+import { InferAttributes, InferCreationAttributes } from "sequelize";
 import {
   DataType,
   Table,
@@ -5,33 +6,32 @@ import {
   BelongsTo,
   Column,
 } from "sequelize-typescript";
+import { IntegrationService } from "@shared/types";
 import Team from "./Team";
 import User from "./User";
 import IdModel from "./base/IdModel";
-import Encrypted, {
-  getEncryptedColumn,
-  setEncryptedColumn,
-} from "./decorators/Encrypted";
+import Encrypted from "./decorators/Encrypted";
 import Fix from "./decorators/Fix";
 
 @Table({ tableName: "authentications", modelName: "authentication" })
 @Fix
-class IntegrationAuthentication extends IdModel {
-  @Column
-  service: string;
+class IntegrationAuthentication extends IdModel<
+  InferAttributes<IntegrationAuthentication>,
+  Partial<InferCreationAttributes<IntegrationAuthentication>>
+> {
+  @Column(DataType.STRING)
+  service: IntegrationService;
 
   @Column(DataType.ARRAY(DataType.STRING))
   scopes: string[];
 
   @Column(DataType.BLOB)
   @Encrypted
-  get token() {
-    return getEncryptedColumn(this, "token");
-  }
+  token: string;
 
-  set token(value: string) {
-    setEncryptedColumn(this, "token", value);
-  }
+  @Column(DataType.BLOB)
+  @Encrypted
+  refreshToken: string;
 
   // associations
 

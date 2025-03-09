@@ -1,26 +1,35 @@
-import { sortBy, filter, uniq, isEqual } from "lodash";
+import filter from "lodash/filter";
+import isEqual from "lodash/isEqual";
+import orderBy from "lodash/orderBy";
+import uniq from "lodash/uniq";
 import { observer } from "mobx-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { usePopoverState, PopoverDisclosure } from "reakit/Popover";
 import Document from "~/models/Document";
-import { AvatarWithPresence } from "~/components/Avatar";
+import { AvatarSize, AvatarWithPresence } from "~/components/Avatar";
 import DocumentViews from "~/components/DocumentViews";
 import Facepile from "~/components/Facepile";
 import NudeButton from "~/components/NudeButton";
 import Popover from "~/components/Popover";
-import useCurrentTeam from "~/hooks/useCurrentTeam";
 import useCurrentUser from "~/hooks/useCurrentUser";
 import useStores from "~/hooks/useStores";
 
 type Props = {
+  /** The document to display live collaborators for */
   document: Document;
+  /** The maximum number of collaborators to display, defaults to 6 */
+  limit?: number;
 };
 
+/**
+ * Displays a list of live collaborators for a document, including their avatars
+ * and presence status.
+ */
 function Collaborators(props: Props) {
+  const { limit = 6 } = props;
   const { t } = useTranslation();
   const user = useCurrentUser();
-  const team = useCurrentTeam();
   const currentUserId = user?.id;
   const [requestedUserIds, setRequestedUserIds] = React.useState<string[]>([]);
   const { users, presence, ui } = useStores();
@@ -38,15 +47,16 @@ function Collaborators(props: Props) {
   // ensure currently present via websocket are always ordered first
   const collaborators = React.useMemo(
     () =>
-      sortBy(
+      orderBy(
         filter(
           users.orderedData,
-          (user) =>
-            (presentIds.includes(user.id) ||
-              document.collaboratorIds.includes(user.id)) &&
-            !user.isSuspended
+          (u) =>
+            (presentIds.includes(u.id) ||
+              document.collaboratorIds.includes(u.id)) &&
+            !u.isSuspended
         ),
-        (user) => presentIds.includes(user.id)
+        [(u) => presentIds.includes(u.id), "id"],
+        ["asc", "asc"]
       ),
     [document.collaboratorIds, users.orderedData, presentIds]
   );
@@ -59,7 +69,7 @@ function Collaborators(props: Props) {
 
     if (!isEqual(requestedUserIds, ids) && ids.length > 0) {
       setRequestedUserIds(ids);
-      users.fetchPage({ ids, limit: 100 });
+      void users.fetchPage({ ids, limit: 100 });
     }
   }, [document, users, presentIds, document.collaboratorIds, requestedUserIds]);
 
@@ -68,44 +78,56 @@ function Collaborators(props: Props) {
     placement: "bottom-end",
   });
 
+  const renderAvatar = React.useCallback(
+    ({ model: collaborator, ...rest }) => {
+      const isPresent = presentIds.includes(collaborator.id);
+      const isEditing = editingIds.includes(collaborator.id);
+      const isObserving = ui.observingUserId === collaborator.id;
+      const isObservable = collaborator.id !== currentUserId;
+
+      return (
+        <AvatarWithPresence
+          {...rest}
+          key={collaborator.id}
+          user={collaborator}
+          isPresent={isPresent}
+          isEditing={isEditing}
+          isObserving={isObserving}
+          isCurrentUser={currentUserId === collaborator.id}
+          onClick={
+            isObservable
+              ? (ev) => {
+                  if (isPresent) {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    ui.setObservingUser(
+                      isObserving ? undefined : collaborator.id
+                    );
+                  }
+                }
+              : undefined
+          }
+        />
+      );
+    },
+    [presentIds, ui, currentUserId, editingIds]
+  );
+
   return (
     <>
       <PopoverDisclosure {...popover}>
-        {(props) => (
-          <NudeButton width={collaborators.length * 32} height={32} {...props}>
+        {(popoverProps) => (
+          <NudeButton
+            width={Math.min(collaborators.length, limit) * AvatarSize.Large}
+            height={AvatarSize.Large}
+            {...popoverProps}
+          >
             <Facepile
+              size={AvatarSize.Large}
+              limit={limit}
+              overflow={Math.max(0, collaborators.length - limit)}
               users={collaborators}
-              renderAvatar={(collaborator) => {
-                const isPresent = presentIds.includes(collaborator.id);
-                const isEditing = editingIds.includes(collaborator.id);
-                const isObserving = ui.observingUserId === collaborator.id;
-                const isObservable =
-                  team.collaborativeEditing && collaborator.id !== user.id;
-
-                return (
-                  <AvatarWithPresence
-                    key={collaborator.id}
-                    user={collaborator}
-                    isPresent={isPresent}
-                    isEditing={isEditing}
-                    isObserving={isObserving}
-                    isCurrentUser={currentUserId === collaborator.id}
-                    onClick={
-                      isObservable
-                        ? (ev) => {
-                            if (isPresent) {
-                              ev.preventDefault();
-                              ev.stopPropagation();
-                              ui.setObservingUser(
-                                isObserving ? undefined : collaborator.id
-                              );
-                            }
-                          }
-                        : undefined
-                    }
-                  />
-                );
-              }}
+              renderAvatar={renderAvatar}
             />
           </NudeButton>
         )}

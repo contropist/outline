@@ -3,28 +3,28 @@ import presentAttachment from "./attachment";
 import presentAuthenticationProvider from "./authenticationProvider";
 import presentAvailableTeam from "./availableTeam";
 import presentCollection from "./collection";
-import presentCollectionGroupMembership from "./collectionGroupMembership";
+import presentComment from "./comment";
 import presentDocument from "./document";
 import presentEvent from "./event";
 import presentFileOperation from "./fileOperation";
 import presentGroup from "./group";
 import presentGroupMembership from "./groupMembership";
+import presentGroupUser from "./groupUser";
 import presentIntegration from "./integration";
 import presentMembership from "./membership";
-import presentNotificationSetting from "./notificationSetting";
 import presentPin from "./pin";
 import presentPolicies from "./policy";
+import presentProviderConfig from "./providerConfig";
+import presentPublicTeam from "./publicTeam";
+import presentReaction from "./reaction";
 import presentRevision from "./revision";
 import presentSearchQuery from "./searchQuery";
 import presentShare from "./share";
-import presentSlackAttachment from "./slackAttachment";
 import presentStar from "./star";
 import presentSubscription from "./subscription";
 import presentTeam from "./team";
 import presentUser from "./user";
 import presentView from "./view";
-import presentWebhook from "./webhook";
-import presentWebhookSubscription from "./webhookSubscription";
 
 export {
   presentApiKey,
@@ -32,26 +32,26 @@ export {
   presentAuthenticationProvider,
   presentAvailableTeam,
   presentCollection,
-  presentCollectionGroupMembership,
+  presentComment,
   presentDocument,
   presentEvent,
   presentFileOperation,
   presentGroup,
+  presentGroupUser,
   presentGroupMembership,
   presentIntegration,
   presentMembership,
-  presentNotificationSetting,
+  presentPublicTeam,
   presentPin,
   presentPolicies,
+  presentProviderConfig,
+  presentReaction,
   presentRevision,
   presentSearchQuery,
   presentShare,
-  presentSlackAttachment,
   presentStar,
   presentSubscription,
   presentTeam,
   presentUser,
   presentView,
-  presentWebhook,
-  presentWebhookSubscription,
 };

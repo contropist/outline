@@ -2,82 +2,76 @@ import * as React from "react";
 import styled from "styled-components";
 import useBoolean from "~/hooks/useBoolean";
 import Initials from "./Initials";
-import placeholder from "./placeholder.png";
+
+export enum AvatarSize {
+  Small = 16,
+  Toast = 18,
+  Medium = 24,
+  Large = 28,
+  XLarge = 32,
+  XXLarge = 48,
+  Upload = 64,
+}
 
 export interface IAvatar {
   avatarUrl: string | null;
-  color: string;
-  initial: string;
-  id: string;
+  color?: string;
+  initial?: string;
+  id?: string;
 }
 
 type Props = {
-  size: number;
+  /** The size of the avatar */
+  size: AvatarSize;
+  /** The source of the avatar image, if not passing a model. */
   src?: string;
-  icon?: React.ReactNode;
+  /** The avatar model, if not passing a source. */
   model?: IAvatar;
+  /** The alt text for the image */
   alt?: string;
-  showBorder?: boolean;
+  /** Optional click handler */
   onClick?: React.MouseEventHandler<HTMLImageElement>;
+  /** Optional class name */
   className?: string;
+  /** Optional style */
+  style?: React.CSSProperties;
 };
 
 function Avatar(props: Props) {
-  const { icon, showBorder, model, ...rest } = props;
+  const { model, style, ...rest } = props;
   const src = props.src || model?.avatarUrl;
   const [error, handleError] = useBoolean(false);
 
   return (
-    <Relative>
-      {src ? (
-        <CircleImg
-          onError={handleError}
-          src={error ? placeholder : src}
-          $showBorder={showBorder}
-          {...rest}
-        />
+    <Relative style={style}>
+      {src && !error ? (
+        <CircleImg onError={handleError} src={src} {...rest} />
       ) : model ? (
-        <Initials color={model.color} $showBorder={showBorder} {...rest}>
+        <Initials color={model.color} {...rest}>
           {model.initial}
         </Initials>
       ) : (
-        <Initials $showBorder={showBorder} {...rest} />
+        <Initials {...rest} />
       )}
-      {icon && <IconWrapper>{icon}</IconWrapper>}
     </Relative>
   );
 }
 
 Avatar.defaultProps = {
-  size: 24,
+  size: AvatarSize.Medium,
 };
 
 const Relative = styled.div`
   position: relative;
+  user-select: none;
   flex-shrink: 0;
 `;
 
-const IconWrapper = styled.div`
-  display: flex;
-  position: absolute;
-  bottom: -2px;
-  right: -2px;
-  background: ${(props) => props.theme.primary};
-  border: 2px solid ${(props) => props.theme.background};
-  border-radius: 100%;
-  width: 20px;
-  height: 20px;
-`;
-
-const CircleImg = styled.img<{ size: number; $showBorder?: boolean }>`
+const CircleImg = styled.img<{ size: number }>`
   display: block;
   width: ${(props) => props.size}px;
   height: ${(props) => props.size}px;
   border-radius: 50%;
-  border: ${(props) =>
-    props.$showBorder === false
-      ? "none"
-      : `2px solid ${props.theme.background}`};
   flex-shrink: 0;
   overflow: hidden;
 `;

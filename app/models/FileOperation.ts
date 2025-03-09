@@ -1,12 +1,19 @@
-import { computed } from "mobx";
+import { computed, observable } from "mobx";
+import {
+  FileOperationFormat,
+  FileOperationState,
+  FileOperationType,
+} from "@shared/types";
 import { bytesToHumanReadable } from "@shared/utils/files";
-import BaseModel from "./BaseModel";
 import User from "./User";
+import Model from "./base/Model";
+import Relation from "./decorators/Relation";
 
-class FileOperation extends BaseModel {
-  id: string;
+class FileOperation extends Model {
+  static modelName = "FileOperation";
 
-  state: string;
+  @observable
+  state: FileOperationState;
 
   name: string;
 
@@ -14,17 +21,24 @@ class FileOperation extends BaseModel {
 
   collectionId: string | null;
 
+  @observable
   size: number;
 
-  type: "import" | "export";
+  type: FileOperationType;
 
+  format: FileOperationFormat;
+
+  @Relation(() => User)
   user: User;
-
-  createdAt: string;
 
   @computed
   get sizeInMB(): string {
     return bytesToHumanReadable(this.size);
+  }
+
+  @computed
+  get downloadUrl(): string {
+    return `/api/fileOperations.redirect?id=${this.id}`;
   }
 }
 

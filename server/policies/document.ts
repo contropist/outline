@@ -1,341 +1,260 @@
 import invariant from "invariant";
-import { TeamPreference } from "@shared/types";
+import filter from "lodash/filter";
+import { DocumentPermission, TeamPreference } from "@shared/types";
 import { Document, Revision, User, Team } from "@server/models";
-import { allow, _cannot as cannot } from "./cancan";
+import { allow, cannot, can } from "./cancan";
+import { and, isTeamAdmin, isTeamModel, isTeamMutable, or } from "./utils";
 
-allow(User, "createDocument", Team, (user, team) => {
-  if (!team || user.isViewer || user.teamId !== team.id) {
-    return false;
-  }
-  return true;
-});
+allow(User, "createDocument", Team, (actor, document) =>
+  and(
+    //
+    !actor.isGuest,
+    !actor.isViewer,
+    isTeamModel(actor, document),
+    isTeamMutable(actor)
+  )
+);
 
-allow(User, "read", Document, (user, document) => {
-  if (!document) {
-    return false;
-  }
+allow(User, "read", Document, (actor, document) =>
+  and(
+    isTeamModel(actor, document),
+    or(
+      includesMembership(document, [
+        DocumentPermission.Read,
+        DocumentPermission.ReadWrite,
+        DocumentPermission.Admin,
+      ]),
+      and(!!document?.isDraft, actor.id === document?.createdById),
+      and(
+        !!document?.isWorkspaceTemplate,
+        can(actor, "readTemplate", actor.team)
+      ),
+      can(actor, "readDocument", document?.collection)
+    )
+  )
+);
 
-  // existence of collection option is not required here to account for share tokens
-  if (document.collection && cannot(user, "read", document.collection)) {
-    return false;
-  }
+allow(User, ["listRevisions", "listViews"], Document, (actor, document) =>
+  or(
+    and(can(actor, "read", document), !actor.isGuest),
+    and(can(actor, "update", document), actor.isGuest)
+  )
+);
 
-  return user.teamId === document.teamId;
-});
+allow(User, "download", Document, (actor, document) =>
+  and(
+    can(actor, "read", document),
+    or(
+      and(!actor.isGuest, !actor.isViewer),
+      !!actor.team.getPreference(TeamPreference.ViewersCanExport)
+    )
+  )
+);
 
-allow(User, "download", Document, (user, document) => {
-  if (!document) {
-    return false;
-  }
-
-  // existence of collection option is not required here to account for share tokens
-  if (document.collection && cannot(user, "read", document.collection)) {
-    return false;
-  }
-
-  if (
-    user.isViewer &&
-    !user.team.getPreference(TeamPreference.ViewersCanExport, true)
-  ) {
-    return false;
-  }
-
-  return user.teamId === document.teamId;
-});
-
-allow(User, "star", Document, (user, document) => {
-  if (!document) {
-    return false;
-  }
-  if (document.archivedAt) {
-    return false;
-  }
-  if (document.deletedAt) {
-    return false;
-  }
-  if (document.template) {
-    return false;
-  }
-
-  if (document.collectionId) {
-    invariant(
-      document.collection,
-      "collection is missing, did you forget to include in the query scope?"
-    );
-    if (cannot(user, "read", document.collection)) {
-      return false;
-    }
-  }
-
-  return user.teamId === document.teamId;
-});
-
-allow(User, "unstar", Document, (user, document) => {
-  if (!document) {
-    return false;
-  }
-  if (document.template) {
-    return false;
-  }
-
-  if (document.collectionId) {
-    invariant(
-      document.collection,
-      "collection is missing, did you forget to include in the query scope?"
-    );
-    if (cannot(user, "read", document.collection)) {
-      return false;
-    }
-  }
-
-  return user.teamId === document.teamId;
-});
-
-allow(User, "share", Document, (user, document) => {
-  if (!document) {
-    return false;
-  }
-  if (document.archivedAt) {
-    return false;
-  }
-  if (document.deletedAt) {
-    return false;
-  }
-  invariant(
-    document.collection,
-    "collection is missing, did you forget to include in the query scope?"
-  );
-
-  if (cannot(user, "share", document.collection)) {
-    return false;
-  }
-
-  return user.teamId === document.teamId;
-});
-
-allow(User, "update", Document, (user, document) => {
-  if (!document) {
-    return false;
-  }
-  if (document.archivedAt) {
-    return false;
-  }
-  if (document.deletedAt) {
-    return false;
-  }
-
-  if (document.collectionId) {
-    invariant(
-      document.collection,
-      "collection is missing, did you forget to include in the query scope?"
-    );
-
-    if (cannot(user, "update", document.collection)) {
-      return false;
-    }
-  }
-
-  return user.teamId === document.teamId;
-});
-
-allow(User, "createChildDocument", Document, (user, document) => {
-  if (!document) {
-    return false;
-  }
-  if (document.archivedAt) {
-    return false;
-  }
-  if (document.deletedAt) {
-    return false;
-  }
-  if (document.template) {
-    return false;
-  }
-  if (!document.publishedAt) {
-    return false;
-  }
-  invariant(
-    document.collection,
-    "collection is missing, did you forget to include in the query scope?"
-  );
-  if (cannot(user, "update", document.collection)) {
-    return false;
-  }
-  return user.teamId === document.teamId;
-});
-
-allow(User, "move", Document, (user, document) => {
-  if (!document) {
-    return false;
-  }
-  if (document.archivedAt) {
-    return false;
-  }
-  if (document.deletedAt) {
-    return false;
-  }
-  if (!document.publishedAt) {
-    return false;
-  }
-  invariant(
-    document.collection,
-    "collection is missing, did you forget to include in the query scope?"
-  );
-  if (cannot(user, "update", document.collection)) {
-    return false;
-  }
-  return user.teamId === document.teamId;
-});
+allow(User, "comment", Document, (actor, document) =>
+  and(
+    // TODO: We'll introduce a separate permission for commenting
+    or(
+      and(can(actor, "read", document), !actor.isGuest),
+      and(can(actor, "update", document), actor.isGuest)
+    ),
+    isTeamMutable(actor),
+    !!document?.isActive,
+    !document?.template
+  )
+);
 
 allow(
   User,
-  ["pin", "unpin", "subscribe", "unsubscribe"],
+  ["star", "unstar", "subscribe", "unsubscribe"],
   Document,
-  (user, document) => {
-    if (!document) {
-      return false;
-    }
-    if (document.archivedAt) {
-      return false;
-    }
-    if (document.deletedAt) {
-      return false;
-    }
-    if (document.template) {
-      return false;
-    }
-    if (!document.publishedAt) {
-      return false;
-    }
-    invariant(
-      document.collection,
-      "collection is missing, did you forget to include in the query scope?"
-    );
-    if (cannot(user, "update", document.collection)) {
-      return false;
-    }
-    return user.teamId === document.teamId;
-  }
+  (actor, document) =>
+    and(
+      //
+      can(actor, "read", document),
+      !document?.template
+    )
 );
 
-allow(User, ["pinToHome"], Document, (user, document) => {
-  if (!document) {
-    return false;
-  }
-  if (document.archivedAt) {
-    return false;
-  }
-  if (document.deletedAt) {
-    return false;
-  }
-  if (document.template) {
-    return false;
-  }
-  if (!document.publishedAt) {
-    return false;
-  }
+allow(User, "share", Document, (actor, document) =>
+  and(
+    can(actor, "read", document),
+    isTeamMutable(actor),
+    !!document?.isActive,
+    !document?.template,
+    or(!document?.collection, can(actor, "share", document?.collection))
+  )
+);
 
-  return user.teamId === document.teamId && user.isAdmin;
-});
+allow(User, "update", Document, (actor, document) =>
+  and(
+    can(actor, "read", document),
+    isTeamMutable(actor),
+    !!document?.isActive,
+    or(
+      includesMembership(document, [
+        DocumentPermission.ReadWrite,
+        DocumentPermission.Admin,
+      ]),
+      or(
+        can(actor, "updateDocument", document?.collection),
+        and(!!document?.isDraft && actor.id === document?.createdById),
+        and(
+          !!document?.isWorkspaceTemplate,
+          or(
+            actor.id === document?.createdById,
+            can(actor, "updateTemplate", actor.team)
+          )
+        )
+      )
+    )
+  )
+);
 
-allow(User, "delete", Document, (user, document) => {
-  if (!document) {
-    return false;
-  }
-  if (document.deletedAt) {
-    return false;
-  }
+allow(User, "publish", Document, (actor, document) =>
+  and(
+    //
+    can(actor, "update", document),
+    !!document?.isDraft
+  )
+);
 
-  // allow deleting document without a collection
-  if (document.collection && cannot(user, "update", document.collection)) {
-    return false;
-  }
+allow(User, "manageUsers", Document, (actor, document) =>
+  and(
+    !document?.template,
+    can(actor, "update", document),
+    or(
+      includesMembership(document, [DocumentPermission.Admin]),
+      can(actor, "updateDocument", document?.collection),
+      !!document?.isDraft && actor.id === document?.createdById
+    )
+  )
+);
 
-  // unpublished drafts can always be deleted
-  if (
-    !document.deletedAt &&
-    !document.publishedAt &&
-    user.teamId === document.teamId
-  ) {
-    return true;
-  }
+allow(User, "duplicate", Document, (actor, document) =>
+  and(
+    can(actor, "update", document),
+    or(
+      includesMembership(document, [DocumentPermission.Admin]),
+      can(actor, "updateDocument", document?.collection),
+      !!document?.isDraft && actor.id === document?.createdById,
+      and(
+        !!document?.isWorkspaceTemplate,
+        or(
+          actor.id === document?.createdById,
+          can(actor, "updateTemplate", actor.team)
+        )
+      )
+    )
+  )
+);
 
-  return user.teamId === document.teamId;
-});
+allow(User, "move", Document, (actor, document) =>
+  and(
+    can(actor, "update", document),
+    or(
+      can(actor, "updateDocument", document?.collection),
+      and(!!document?.isDraft && actor.id === document?.createdById),
+      and(
+        !!document?.isWorkspaceTemplate,
+        or(
+          actor.id === document?.createdById,
+          can(actor, "updateTemplate", actor.team)
+        )
+      )
+    )
+  )
+);
 
-allow(User, "permanentDelete", Document, (user, document) => {
-  if (!document) {
-    return false;
-  }
-  if (!document.deletedAt) {
-    return false;
-  }
+allow(User, "createChildDocument", Document, (actor, document) =>
+  and(can(actor, "update", document), !document?.isDraft, !document?.template)
+);
 
-  // allow deleting document without a collection
-  if (document.collection && cannot(user, "update", document.collection)) {
-    return false;
-  }
+allow(User, ["updateInsights", "pin", "unpin"], Document, (actor, document) =>
+  and(
+    can(actor, "update", document),
+    can(actor, "update", document?.collection),
+    !document?.isDraft,
+    !document?.template,
+    !actor.isGuest
+  )
+);
 
-  return user.teamId === document.teamId;
-});
+allow(User, "pinToHome", Document, (actor, document) =>
+  and(
+    //
+    isTeamAdmin(actor, document),
+    isTeamMutable(actor),
+    !document?.isDraft,
+    !document?.template,
+    !!document?.isActive
+  )
+);
 
-allow(User, "restore", Document, (user, document) => {
-  if (!document) {
-    return false;
-  }
-  if (!document.deletedAt) {
-    return false;
-  }
+allow(User, "delete", Document, (actor, document) =>
+  and(
+    isTeamModel(actor, document),
+    isTeamMutable(actor),
+    !document?.isDeleted,
+    or(
+      can(actor, "unarchive", document),
+      can(actor, "update", document),
+      and(!document?.isWorkspaceTemplate, !document?.collection)
+    )
+  )
+);
 
-  if (document.collection && cannot(user, "update", document.collection)) {
-    return false;
-  }
+allow(User, ["restore", "permanentDelete"], Document, (actor, document) =>
+  and(
+    isTeamModel(actor, document),
+    !actor.isGuest,
+    !!document?.isDeleted,
+    or(
+      includesMembership(document, [
+        DocumentPermission.ReadWrite,
+        DocumentPermission.Admin,
+      ]),
+      can(actor, "updateDocument", document?.collection),
+      and(!!document?.isDraft && actor.id === document?.createdById),
+      and(
+        !!document?.isWorkspaceTemplate,
+        can(actor, "updateTemplate", actor.team)
+      ),
+      !document?.collection
+    )
+  )
+);
 
-  return user.teamId === document.teamId;
-});
+allow(User, "archive", Document, (actor, document) =>
+  and(
+    !document?.template,
+    !document?.isDraft,
+    !!document?.isActive,
+    can(actor, "update", document),
+    or(
+      includesMembership(document, [DocumentPermission.Admin]),
+      can(actor, "updateDocument", document?.collection)
+    )
+  )
+);
 
-allow(User, "archive", Document, (user, document) => {
-  if (!document) {
-    return false;
-  }
-  if (!document.publishedAt) {
-    return false;
-  }
-  if (document.archivedAt) {
-    return false;
-  }
-  if (document.deletedAt) {
-    return false;
-  }
-  invariant(
-    document.collection,
-    "collection is missing, did you forget to include in the query scope?"
-  );
-  if (cannot(user, "update", document.collection)) {
-    return false;
-  }
-  return user.teamId === document.teamId;
-});
-
-allow(User, "unarchive", Document, (user, document) => {
-  if (!document) {
-    return false;
-  }
-  invariant(
-    document.collection,
-    "collection is missing, did you forget to include in the query scope?"
-  );
-  if (cannot(user, "update", document.collection)) {
-    return false;
-  }
-  if (!document.archivedAt) {
-    return false;
-  }
-  if (document.deletedAt) {
-    return false;
-  }
-  return user.teamId === document.teamId;
-});
+allow(User, "unarchive", Document, (actor, document) =>
+  and(
+    !document?.template,
+    !document?.isDraft,
+    !document?.isDeleted,
+    !!document?.archivedAt,
+    can(actor, "read", document),
+    or(
+      includesMembership(document, [
+        DocumentPermission.ReadWrite,
+        DocumentPermission.Admin,
+      ]),
+      can(actor, "updateDocument", document?.collection),
+      and(!!document?.isDraft && actor.id === document?.createdById)
+    )
+  )
+);
 
 allow(
   Document,
@@ -345,18 +264,54 @@ allow(
 );
 
 allow(User, "unpublish", Document, (user, document) => {
-  if (!document) {
+  if (
+    !document ||
+    user.isGuest ||
+    user.isViewer ||
+    !document.isActive ||
+    document.isDraft
+  ) {
     return false;
   }
+
+  if (
+    document.isWorkspaceTemplate &&
+    (user.id === document.createdById || can(user, "updateTemplate", user.team))
+  ) {
+    return true;
+  }
+
   invariant(
     document.collection,
     "collection is missing, did you forget to include in the query scope?"
   );
-  if (!document.publishedAt || !!document.deletedAt || !!document.archivedAt) {
-    return false;
-  }
-  if (cannot(user, "update", document.collection)) {
+  if (cannot(user, "updateDocument", document.collection)) {
     return false;
   }
   return user.teamId === document.teamId;
 });
+
+function includesMembership(
+  document: Document | null,
+  permissions: DocumentPermission[]
+) {
+  if (!document) {
+    return false;
+  }
+
+  invariant(
+    document.memberships,
+    "Development: document memberships should be preloaded, did you forget withMembership scope?"
+  );
+  invariant(
+    document.groupMemberships,
+    "Development: document groupMemberships should be preloaded, did you forget withMembership scope?"
+  );
+
+  const membershipIds = filter(
+    [...document.memberships, ...document.groupMemberships],
+    (m) => permissions.includes(m.permission as DocumentPermission)
+  ).map((m) => m.id);
+
+  return membershipIds.length > 0 ? membershipIds : false;
+}

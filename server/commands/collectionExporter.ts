@@ -1,61 +1,61 @@
-import { Transaction } from "sequelize";
-import { APM } from "@server/logging/tracing";
-import { Collection, Event, Team, User, FileOperation } from "@server/models";
+import { v4 as uuidv4 } from "uuid";
 import {
+  FileOperationFormat,
   FileOperationType,
   FileOperationState,
-  FileOperationFormat,
-} from "@server/models/FileOperation";
-import { getAWSKeyForFileOp } from "@server/utils/s3";
+} from "@shared/types";
+import { traceFunction } from "@server/logging/tracing";
+import { Collection, Team, User, FileOperation } from "@server/models";
+import { Buckets } from "@server/models/helpers/AttachmentHelper";
+import { type APIContext } from "@server/types";
+
+type Props = {
+  collection?: Collection;
+  team: Team;
+  user: User;
+  format?: FileOperationFormat;
+  includeAttachments?: boolean;
+  ctx: APIContext;
+};
+
+function getKeyForFileOp(
+  teamId: string,
+  format: FileOperationFormat,
+  name: string
+) {
+  return `${
+    Buckets.uploads
+  }/${teamId}/${uuidv4()}/${name}-export.${format.replace(/outline-/, "")}.zip`;
+}
 
 async function collectionExporter({
   collection,
   team,
   user,
-  ip,
-  transaction,
-}: {
-  collection?: Collection;
-  team: Team;
-  user: User;
-  ip: string;
-  transaction: Transaction;
-}) {
+  format = FileOperationFormat.MarkdownZip,
+  includeAttachments = true,
+  ctx,
+}: Props) {
   const collectionId = collection?.id;
-  const key = getAWSKeyForFileOp(user.teamId, collection?.name || team.name);
-  const fileOperation = await FileOperation.create(
-    {
-      type: FileOperationType.Export,
-      state: FileOperationState.Creating,
-      format: FileOperationFormat.MarkdownZip,
-      key,
-      url: null,
-      size: 0,
-      collectionId,
-      userId: user.id,
-      teamId: user.teamId,
-    },
-    {
-      transaction,
-    }
+  const key = getKeyForFileOp(
+    user.teamId,
+    format,
+    collection?.name || team.name
   );
-
-  await Event.create(
-    {
-      name: "fileOperations.create",
-      teamId: user.teamId,
-      actorId: user.id,
-      modelId: fileOperation.id,
-      collectionId,
-      ip,
-      data: {
-        type: FileOperationType.Import,
-      },
+  const fileOperation = await FileOperation.createWithCtx(ctx, {
+    type: FileOperationType.Export,
+    state: FileOperationState.Creating,
+    format,
+    key,
+    url: null,
+    size: 0,
+    collectionId,
+    options: {
+      includeAttachments,
     },
-    {
-      transaction,
-    }
-  );
+    userId: user.id,
+    teamId: user.teamId,
+  });
 
   fileOperation.user = user;
 
@@ -66,7 +66,6 @@ async function collectionExporter({
   return fileOperation;
 }
 
-export default APM.traceFunction({
-  serviceName: "command",
+export default traceFunction({
   spanName: "collectionExporter",
 })(collectionExporter);

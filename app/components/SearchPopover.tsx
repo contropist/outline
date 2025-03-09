@@ -1,4 +1,4 @@
-import { debounce } from "lodash";
+import debounce from "lodash/debounce";
 import { observer } from "mobx-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
@@ -9,7 +9,7 @@ import Empty from "~/components/Empty";
 import { Outline } from "~/components/Input";
 import InputSearch from "~/components/InputSearch";
 import Placeholder from "~/components/List/Placeholder";
-import PaginatedList, { PaginatedItem } from "~/components/PaginatedList";
+import PaginatedList from "~/components/PaginatedList";
 import Popover from "~/components/Popover";
 import { id as bodyContentId } from "~/components/SkipNavContent";
 import useKeyDown from "~/hooks/useKeyDown";
@@ -17,9 +17,12 @@ import useStores from "~/hooks/useStores";
 import { SearchResult } from "~/types";
 import SearchListItem from "./SearchListItem";
 
-type Props = { shareId: string };
+interface Props extends React.HTMLAttributes<HTMLInputElement> {
+  shareId: string;
+  className?: string;
+}
 
-function SearchPopover({ shareId }: Props) {
+function SearchPopover({ shareId, className }: Props) {
   const { t } = useTranslation();
   const { documents } = useStores();
   const focusRef = React.useRef<HTMLElement | null>(null);
@@ -31,25 +34,38 @@ function SearchPopover({ shareId }: Props) {
   });
 
   const [query, setQuery] = React.useState("");
-  const searchResults = documents.searchResults(query);
+  const { show, hide } = popover;
 
+  const [searchResults, setSearchResults] = React.useState<
+    SearchResult[] | undefined
+  >();
   const [cachedQuery, setCachedQuery] = React.useState(query);
   const [cachedSearchResults, setCachedSearchResults] = React.useState<
-    PaginatedItem[] | undefined
+    SearchResult[] | undefined
   >(searchResults);
 
   React.useEffect(() => {
     if (searchResults) {
       setCachedQuery(query);
       setCachedSearchResults(searchResults);
-      popover.show();
+      show();
     }
-  }, [searchResults, query, popover.show]);
+  }, [searchResults, query, show]);
 
   const performSearch = React.useCallback(
     async ({ query, ...options }) => {
       if (query?.length > 0) {
-        return await documents.search(query, { shareId, ...options });
+        const response = await documents.search({
+          query,
+          shareId,
+          ...options,
+        });
+
+        if (response.length) {
+          setSearchResults(response);
+        }
+
+        return response;
       }
       return undefined;
     },
@@ -76,9 +92,8 @@ function SearchPopover({ shareId }: Props) {
     [popover, cachedQuery]
   );
 
-  const searchInputRef = popover.unstable_referenceRef as React.RefObject<
-    HTMLInputElement
-  >;
+  const searchInputRef =
+    popover.unstable_referenceRef as React.RefObject<HTMLInputElement>;
 
   const firstSearchItem = React.useRef<HTMLAnchorElement>(null);
 
@@ -89,10 +104,14 @@ function SearchPopover({ shareId }: Props) {
 
   const handleSearchInputFocus = React.useCallback(() => {
     focusRef.current = searchInputRef.current;
-  }, []);
+  }, [searchInputRef]);
 
   const handleKeyDown = React.useCallback(
     (ev: React.KeyboardEvent<HTMLInputElement>) => {
+      if (ev.nativeEvent.isComposing) {
+        return;
+      }
+
       if (ev.key === "Enter") {
         if (searchResults) {
           popover.show();
@@ -138,12 +157,12 @@ function SearchPopover({ shareId }: Props) {
   );
 
   const handleSearchItemClick = React.useCallback(() => {
-    popover.hide();
+    hide();
     if (searchInputRef.current) {
       searchInputRef.current.value = "";
       focusRef.current = document.getElementById(bodyContentId);
     }
-  }, [popover.hide]);
+  }, [searchInputRef, hide]);
 
   useKeyDown("/", (ev) => {
     if (
@@ -158,21 +177,20 @@ function SearchPopover({ shareId }: Props) {
   return (
     <>
       <PopoverDisclosure {...popover}>
-        {(props) => {
+        {(props) => (
           // props assumes the disclosure is a button, but we want a type-ahead
           // so we take the aria props, and ref and ignore the event handlers
-          return (
-            <StyledInputSearch
-              aria-controls={props["aria-controls"]}
-              aria-expanded={props["aria-expanded"]}
-              aria-haspopup={props["aria-haspopup"]}
-              ref={props.ref}
-              onChange={handleSearchInputChange}
-              onFocus={handleSearchInputFocus}
-              onKeyDown={handleKeyDown}
-            />
-          );
-        }}
+          <StyledInputSearch
+            aria-controls={props["aria-controls"]}
+            aria-expanded={props["aria-expanded"]}
+            aria-haspopup={props["aria-haspopup"]}
+            ref={props.ref}
+            onChange={handleSearchInputChange}
+            onFocus={handleSearchInputFocus}
+            onKeyDown={handleKeyDown}
+            className={className}
+          />
+        )}
       </PopoverDisclosure>
       <Popover
         {...popover}
@@ -191,7 +209,7 @@ function SearchPopover({ shareId }: Props) {
             <NoResults>{t("No results for {{query}}", { query })}</NoResults>
           }
           loading={<PlaceholderList count={3} header={{ height: 20 }} />}
-          renderItem={(item: SearchResult, index, compositeProps) => (
+          renderItem={(item: SearchResult, index) => (
             <SearchListItem
               key={item.document.id}
               shareId={shareId}
@@ -200,7 +218,6 @@ function SearchPopover({ shareId }: Props) {
               context={item.context}
               highlight={cachedQuery}
               onClick={handleSearchItemClick}
-              {...compositeProps}
             />
           )}
         />

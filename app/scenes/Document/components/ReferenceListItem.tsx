@@ -3,12 +3,13 @@ import { DocumentIcon } from "outline-icons";
 import * as React from "react";
 import { Link } from "react-router-dom";
 import styled from "styled-components";
-import parseTitle from "@shared/utils/parseTitle";
+import Icon from "@shared/components/Icon";
+import { s, hover, ellipsis } from "@shared/styles";
+import { IconType, NavigationNode } from "@shared/types";
+import { determineIconType } from "@shared/utils/icon";
 import Document from "~/models/Document";
-import EmojiIcon from "~/components/EmojiIcon";
 import Flex from "~/components/Flex";
-import { hover } from "~/styles";
-import { NavigationNode } from "~/types";
+import { SidebarContextType } from "~/components/Sidebar/components/SidebarContext";
 import { sharedDocumentPath } from "~/utils/routeHelpers";
 
 type Props = {
@@ -16,6 +17,7 @@ type Props = {
   document: Document | NavigationNode;
   anchor?: string;
   showCollection?: boolean;
+  sidebarContext?: SidebarContextType;
 };
 
 const DocumentLink = styled(Link)`
@@ -32,26 +34,23 @@ const DocumentLink = styled(Link)`
   &:${hover},
   &:active,
   &:focus {
-    background: ${(props) => props.theme.listItemHoverBackground};
+    background: ${s("listItemHoverBackground")};
   }
 `;
 
 const Content = styled(Flex)`
-  color: ${(props) => props.theme.textSecondary};
+  color: ${s("textSecondary")};
   margin-left: -4px;
 `;
 
 const Title = styled.div`
-  overflow: hidden;
-  text-overflow: ellipsis;
+  ${ellipsis()}
   font-size: 14px;
   font-weight: 500;
   line-height: 1.25;
   padding-top: 3px;
-  white-space: nowrap;
-  color: ${(props) => props.theme.text};
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
-    Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
+  color: ${s("text")};
+  font-family: ${s("fontFamily")};
 `;
 
 function ReferenceListItem({
@@ -59,9 +58,13 @@ function ReferenceListItem({
   showCollection,
   anchor,
   shareId,
+  sidebarContext,
   ...rest
 }: Props) {
-  const { emoji } = parseTitle(document.title);
+  const { icon, color } = document;
+  const isEmoji = determineIconType(icon) === IconType.Emoji;
+  const title =
+    document instanceof Document ? document.titleWithDefault : document.title;
 
   return (
     <DocumentLink
@@ -72,19 +75,18 @@ function ReferenceListItem({
         hash: anchor ? `d-${anchor}` : undefined,
         state: {
           title: document.title,
+          sidebarContext,
         },
       }}
       {...rest}
     >
       <Content gap={4} dir="auto">
-        {emoji ? (
-          <EmojiIcon emoji={emoji} />
+        {icon ? (
+          <Icon value={icon} color={color ?? undefined} />
         ) : (
-          <DocumentIcon color="currentColor" />
+          <DocumentIcon />
         )}
-        <Title>
-          {emoji ? document.title.replace(emoji, "") : document.title}
-        </Title>
+        <Title>{isEmoji ? title.replace(icon!, "") : title}</Title>
       </Content>
     </DocumentLink>
   );

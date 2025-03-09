@@ -1,8 +1,41 @@
-import { Context } from "koa";
-import { RouterContext } from "koa-router";
-import { Client } from "@shared/types";
+import { ParameterizedContext, DefaultContext } from "koa";
+import { IRouterParamContext } from "koa-router";
+import { InferAttributes, Model, Transaction } from "sequelize";
+import { z } from "zod";
+import {
+  CollectionSort,
+  NavigationNode,
+  Client,
+  CollectionPermission,
+  JSONValue,
+  UnfurlResourceType,
+  ProsemirrorData,
+} from "@shared/types";
+import { BaseSchema } from "@server/routes/api/schema";
 import { AccountProvisionerResult } from "./commands/accountProvisioner";
-import { FileOperation, Team, User } from "./models";
+import type {
+  ApiKey,
+  Attachment,
+  AuthenticationProvider,
+  FileOperation,
+  Revision,
+  Team,
+  User,
+  UserMembership,
+  WebhookSubscription,
+  Pin,
+  Star,
+  Document,
+  Collection,
+  Group,
+  Integration,
+  Comment,
+  Subscription,
+  View,
+  Notification,
+  Share,
+  GroupMembership,
+} from "./models";
 
 export enum AuthenticationType {
   API = "api",
@@ -13,28 +46,59 @@ export type AuthenticationResult = AccountProvisionerResult & {
   client: Client;
 };
 
-export type AuthenticatedState = {
+export type Authentication = {
   user: User;
-  token: string;
-  authType: AuthenticationType;
+  token?: string;
+  type?: AuthenticationType;
 };
 
-export type ContextWithState = Context & {
-  state: AuthenticatedState;
+export type Pagination = {
+  limit: number;
+  offset: number;
+  nextPath: string;
 };
 
-export interface APIContext<ReqT = Record<string, unknown>>
-  extends RouterContext<AuthenticatedState, Context> {
+export type AppState = {
+  auth: Authentication | Record<string, never>;
+  transaction: Transaction;
+  pagination: Pagination;
+};
+
+export type AppContext = ParameterizedContext<AppState, DefaultContext>;
+
+export type BaseReq = z.infer<typeof BaseSchema>;
+
+export type BaseRes = unknown;
+
+export interface APIContext<ReqT = BaseReq, ResT = BaseRes>
+  extends ParameterizedContext<
+    AppState,
+    DefaultContext & IRouterParamContext<AppState>,
+    ResT
+  > {
+  /** Typed and validated version of request, consisting of validated body, query, etc. */
   input: ReqT;
+
+  /** The current request's context, which is passed to database mutations. */
+  context: {
+    transaction?: Transaction;
+    auth: Authentication;
+    ip?: string;
+  };
 }
 
-type BaseEvent = {
+type BaseEvent<T extends Model> = {
   teamId: string;
   actorId: string;
-  ip: string;
+  ip: string | null;
+  authType?: AuthenticationType | null;
+  changes?: {
+    attributes: Partial<InferAttributes<T>>;
+    previous: Partial<InferAttributes<T>>;
+  } | null;
 };
 
-export type ApiKeyEvent = BaseEvent & {
+export type ApiKeyEvent = BaseEvent<ApiKey> & {
   name: "api_keys.create" | "api_keys.delete";
   modelId: string;
   data: {
@@ -42,15 +106,19 @@ export type ApiKeyEvent = BaseEvent & {
   };
 };
 
-export type AttachmentEvent = BaseEvent &
+export type AttachmentEvent = BaseEvent<Attachment> &
   (
     | {
         name: "attachments.create";
         modelId: string;
         data: {
           name: string;
-          source: string;
+          source?: "import";
         };
+      }
+    | {
+        name: "attachments.update";
+        modelId: string;
       }
     | {
         name: "attachments.delete";
@@ -61,7 +129,7 @@ export type AttachmentEvent = BaseEvent &
       }
   );
 
-export type AuthenticationProviderEvent = BaseEvent & {
+export type AuthenticationProviderEvent = BaseEvent<AuthenticationProvider> & {
   name: "authenticationProviders.update";
   modelId: string;
   data: {
@@ -69,7 +137,7 @@ export type AuthenticationProviderEvent = BaseEvent & {
   };
 };
 
-export type UserEvent = BaseEvent &
+export type UserEvent = BaseEvent<User> &
   (
     | {
         name:
@@ -98,23 +166,46 @@ export type UserEvent = BaseEvent &
       }
   );
 
-export type DocumentEvent = BaseEvent &
+export type UserMembershipEvent = BaseEvent<UserMembership> & {
+  name: "userMemberships.update";
+  modelId: string;
+  userId: string;
+  documentId: string;
+  data: {
+    index: string | null;
+  };
+};
+
+export type DocumentEvent = BaseEvent<Document> &
   (
     | {
         name:
           | "documents.create"
           | "documents.publish"
-          | "documents.unpublish"
           | "documents.delete"
           | "documents.permanent_delete"
           | "documents.archive"
-          | "documents.unarchive"
           | "documents.restore";
         documentId: string;
         collectionId: string;
         data: {
           title: string;
           source?: "import";
+        };
+      }
+    | {
+        name: "documents.unpublish";
+        documentId: string;
+        collectionId: string;
+      }
+    | {
+        name: "documents.unarchive";
+        documentId: string;
+        collectionId: string;
+        data: {
+          title: string;
+          /** Id of collection from which the document is unarchived */
+          sourceCollectionId: string;
         };
       }
     | {
@@ -152,14 +243,20 @@ export type DocumentEvent = BaseEvent &
       }
   );
 
-export type RevisionEvent = BaseEvent & {
+export type EmptyTrashEvent = {
+  name: "documents.empty_trash";
+  teamId: string;
+  actorId: string;
+};
+
+export type RevisionEvent = BaseEvent<Revision> & {
   name: "revisions.create";
   documentId: string;
   collectionId: string;
   modelId: string;
 };
 
-export type FileOperationEvent = BaseEvent & {
+export type FileOperationEvent = BaseEvent<FileOperation> & {
   name:
     | "fileOperations.create"
     | "fileOperations.update"
@@ -168,33 +265,63 @@ export type FileOperationEvent = BaseEvent & {
   data: Partial<FileOperation>;
 };
 
-export type CollectionUserEvent = BaseEvent & {
+export type CollectionUserEvent = BaseEvent<UserMembership> & {
   name: "collections.add_user" | "collections.remove_user";
   userId: string;
-  collectionId: string;
-};
-
-export type CollectionGroupEvent = BaseEvent & {
-  name: "collections.add_group" | "collections.remove_group";
-  collectionId: string;
   modelId: string;
+  collectionId: string;
   data: {
-    name: string;
+    isNew?: boolean;
   };
 };
 
-export type CollectionEvent = BaseEvent &
+export type CollectionGroupEvent = BaseEvent<GroupMembership> & {
+  name: "collections.add_group" | "collections.remove_group";
+  collectionId: string;
+  modelId: string;
+  data: { membershipId: string };
+};
+
+export type DocumentUserEvent = BaseEvent<UserMembership> & {
+  name: "documents.add_user" | "documents.remove_user";
+  userId: string;
+  modelId: string;
+  documentId: string;
+  data: {
+    isNew?: boolean;
+  };
+};
+
+export type DocumentGroupEvent = BaseEvent<GroupMembership> & {
+  name: "documents.add_group" | "documents.remove_group";
+  documentId: string;
+  modelId: string;
+  data: {
+    isNew?: boolean;
+    membershipId: string;
+  };
+};
+
+export type CollectionEvent = BaseEvent<Collection> &
   (
-    | CollectionUserEvent
-    | CollectionGroupEvent
     | {
-        name:
-          | "collections.create"
-          | "collections.update"
-          | "collections.delete";
+        name: "collections.create";
         collectionId: string;
         data: {
           name: string;
+          source?: "import";
+        };
+      }
+    | {
+        name:
+          | "collections.update"
+          | "collections.delete"
+          | "collections.archive"
+          | "collections.restore";
+        collectionId: string;
+        data: {
+          name: string;
+          archivedAt: string;
         };
       }
     | {
@@ -214,69 +341,96 @@ export type CollectionEvent = BaseEvent &
       }
   );
 
-export type GroupUserEvent = BaseEvent & {
+export type GroupUserEvent = BaseEvent<UserMembership> & {
   name: "groups.add_user" | "groups.remove_user";
   userId: string;
   modelId: string;
-  data: {
-    name: string;
-  };
 };
 
-export type GroupEvent = BaseEvent &
+export type GroupEvent = BaseEvent<Group> &
   (
     | GroupUserEvent
     | {
         name: "groups.create" | "groups.delete" | "groups.update";
         modelId: string;
-        data: {
-          name: string;
-        };
       }
   );
 
-export type IntegrationEvent = BaseEvent & {
-  name: "integrations.create" | "integrations.update";
+export type IntegrationEvent = BaseEvent<Integration> & {
+  name: "integrations.create" | "integrations.update" | "integrations.delete";
   modelId: string;
 };
 
-export type TeamEvent = BaseEvent & {
-  name: "teams.create" | "teams.update";
-  data: Partial<Team>;
+export type TeamEvent = BaseEvent<Team> & {
+  name: "teams.create" | "teams.update" | "teams.delete" | "teams.destroy";
 };
 
-export type PinEvent = BaseEvent & {
+export type PinEvent = BaseEvent<Pin> & {
   name: "pins.create" | "pins.update" | "pins.delete";
   modelId: string;
   documentId: string;
   collectionId?: string;
 };
 
-export type StarEvent = BaseEvent & {
+export type CommentUpdateEvent = BaseEvent<Comment> & {
+  name: "comments.update";
+  modelId: string;
+  documentId: string;
+  actorId: string;
+  data?: {
+    newMentionIds: string[];
+  };
+};
+
+export type CommentReactionEvent = BaseEvent<Comment> & {
+  name: "comments.add_reaction" | "comments.remove_reaction";
+  modelId: string;
+  documentId: string;
+  data: {
+    emoji: string;
+  };
+};
+
+export type CommentEvent =
+  | (BaseEvent<Comment> & {
+      name: "comments.create";
+      modelId: string;
+      documentId: string;
+      actorId: string;
+    })
+  | CommentUpdateEvent
+  | (BaseEvent<Comment> & {
+      name: "comments.delete";
+      modelId: string;
+      documentId: string;
+      actorId: string;
+      collectionId: string;
+    })
+  | CommentReactionEvent;
+
+export type StarEvent = BaseEvent<Star> & {
   name: "stars.create" | "stars.update" | "stars.delete";
   modelId: string;
   documentId: string;
   userId: string;
 };
 
-export type ShareEvent = BaseEvent & {
+export type ShareEvent = BaseEvent<Share> & {
   name: "shares.create" | "shares.update" | "shares.revoke";
   modelId: string;
   documentId: string;
   collectionId?: string;
-  data: {
-    name: string;
-  };
 };
 
-export type SubscriptionEvent = BaseEvent & {
+export type SubscriptionEvent = BaseEvent<Subscription> & {
   name: "subscriptions.create" | "subscriptions.delete";
   modelId: string;
   userId: string;
   documentId: string | null;
+  collectionId: string | null;
 };
 
-export type ViewEvent = BaseEvent & {
+export type ViewEvent = BaseEvent<View> & {
   name: "views.create";
   documentId: string;
   collectionId: string;
@@ -286,7 +440,9 @@ export type ViewEvent = BaseEvent & {
   };
 };
 
-export type WebhookSubscriptionEvent = BaseEvent & {
+export type WebhookDeliveryStatus = "pending" | "success" | "failed";
+
+export type WebhookSubscriptionEvent = BaseEvent<WebhookSubscription> & {
   name:
     | "webhookSubscriptions.create"
     | "webhookSubscriptions.delete"
@@ -299,14 +455,31 @@ export type WebhookSubscriptionEvent = BaseEvent & {
   };
 };
 
+export type NotificationEvent = BaseEvent<Notification> & {
+  name: "notifications.create" | "notifications.update";
+  modelId: string;
+  teamId: string;
+  userId: string;
+  actorId: string;
+  commentId?: string;
+  documentId?: string;
+  collectionId?: string;
+  membershipId?: string;
+};
+
 export type Event =
   | ApiKeyEvent
   | AttachmentEvent
   | AuthenticationProviderEvent
   | DocumentEvent
+  | DocumentUserEvent
+  | DocumentGroupEvent
   | PinEvent
+  | CommentEvent
   | StarEvent
   | CollectionEvent
+  | CollectionUserEvent
+  | CollectionGroupEvent
   | FileOperationEvent
   | IntegrationEvent
   | GroupEvent
@@ -315,9 +488,91 @@ export type Event =
   | SubscriptionEvent
   | TeamEvent
   | UserEvent
+  | UserMembershipEvent
   | ViewEvent
-  | WebhookSubscriptionEvent;
+  | WebhookSubscriptionEvent
+  | NotificationEvent
+  | EmptyTrashEvent;
 
 export type NotificationMetadata = {
   notificationId?: string;
+};
+
+export type JSONExportMetadata = {
+  /** The version of the export, allows updated structure in the future. */
+  exportVersion: number;
+  /** The version of the application that created the export. */
+  version: string;
+  /** The date the export was created. */
+  createdAt: string;
+  /** The ID of the user that created the export. */
+  createdById: string;
+  /** The email of the user that created the export. */
+  createdByEmail: string | null;
+};
+
+export type DocumentJSONExport = {
+  id: string;
+  urlId: string;
+  title: string;
+  /**
+   * For backward compatibility, maintain the `emoji` field.
+   * Future exports will use the `icon` field.
+   * */
+  emoji?: string | null;
+  icon: string | null;
+  color: string | null;
+  data: Record<string, any>;
+  createdById: string;
+  createdByName: string;
+  createdByEmail: string | null;
+  createdAt: string;
+  updatedAt: string;
+  publishedAt: string | null;
+  fullWidth: boolean;
+  template: boolean;
+  parentDocumentId: string | null;
+};
+
+export type AttachmentJSONExport = {
+  id: string;
+  documentId: string | null;
+  contentType: string;
+  name: string;
+  size: number;
+  key: string;
+};
+
+export type CollectionJSONExport = {
+  collection: {
+    id: string;
+    urlId: string;
+    name: string;
+    data?: ProsemirrorData | null;
+    description?: ProsemirrorData | null;
+    permission?: CollectionPermission | null;
+    color?: string | null;
+    icon?: string | null;
+    sort: CollectionSort;
+    documentStructure: NavigationNode[] | null;
+  };
+  documents: {
+    [id: string]: DocumentJSONExport;
+  };
+  attachments: {
+    [id: string]: AttachmentJSONExport;
+  };
+};
+
+export type Unfurl = { [x: string]: JSONValue; type: UnfurlResourceType };
+
+export type UnfurlSignature = (
+  url: string,
+  actor?: User
+) => Promise<Unfurl | void>;
+
+export type UninstallSignature = (integration: Integration) => Promise<void>;
+
+export type Replace<T, K extends keyof T, N extends string> = {
+  [P in keyof T as P extends K ? N : P]: T[P extends K ? K : P];
 };

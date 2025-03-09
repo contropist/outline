@@ -1,13 +1,13 @@
 import teamCreator from "@server/commands/teamCreator";
-import { sequelize } from "@server/database/sequelize";
 import env from "@server/env";
 import {
   DomainNotAllowedError,
   InvalidAuthenticationError,
-  MaximumTeamsError,
+  TeamPendingDeletionError,
 } from "@server/errors";
-import { APM } from "@server/logging/tracing";
+import { traceFunction } from "@server/logging/tracing";
 import { Team, AuthenticationProvider } from "@server/models";
+import { sequelize } from "@server/storage/database";
 
 type TeamProvisionerResult = {
   team: Team;
@@ -58,13 +58,19 @@ async function teamProvisioner({
         model: Team,
         as: "team",
         required: true,
+        paranoid: false,
       },
     ],
+    order: [["enabled", "DESC"]],
   });
 
   // This authentication provider already exists which means we have a team and
   // there is nothing left to do but return the existing credentials
   if (authP) {
+    if (authP.team.deletedAt) {
+      throw TeamPendingDeletionError();
+    }
+
     return {
       authenticationProvider: authP,
       team: authP.team,
@@ -72,19 +78,19 @@ async function teamProvisioner({
     };
   } else if (teamId) {
     // The user is attempting to log into a team with an unfamiliar SSO provider
-    if (env.DEPLOYMENT === "hosted") {
+    if (env.isCloudHosted) {
       throw InvalidAuthenticationError();
     }
 
-    // This team has never been seen before, if self hosted the logic is different
-    // to the multi-tenant version, we want to restrict to a single team that MAY
-    // have multiple authentication providers
-    const team = await Team.findOne();
+    // This team + auth provider combination has not been seen before in self hosted
+    const team = await Team.findByPk(teamId, {
+      rejectOnEmpty: true,
+    });
 
     // If the self-hosted installation has a single team and the domain for the
     // new team is allowed then assign the authentication provider to the
     // existing team
-    if (team && domain) {
+    if (domain) {
       if (await team.isDomainAllowed(domain)) {
         authP = await team.$create<AuthenticationProvider>(
           "authenticationProvider",
@@ -95,19 +101,15 @@ async function teamProvisioner({
           team,
           isNewTeam: false,
         };
-      } else {
-        throw DomainNotAllowedError();
       }
+      throw DomainNotAllowedError();
     }
-
-    if (team) {
-      throw MaximumTeamsError();
-    }
+    throw InvalidAuthenticationError();
   }
 
   // We cannot find an existing team, so we create a new one
-  const team = await sequelize.transaction((transaction) => {
-    return teamCreator({
+  const team = await sequelize.transaction((transaction) =>
+    teamCreator({
       name,
       domain,
       subdomain,
@@ -115,8 +117,8 @@ async function teamProvisioner({
       authenticationProviders: [authenticationProvider],
       ip,
       transaction,
-    });
-  });
+    })
+  );
 
   return {
     team,
@@ -125,7 +127,6 @@ async function teamProvisioner({
   };
 }
 
-export default APM.traceFunction({
-  serviceName: "command",
+export default traceFunction({
   spanName: "teamProvisioner",
 })(teamProvisioner);

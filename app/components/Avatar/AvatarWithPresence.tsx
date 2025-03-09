@@ -2,9 +2,10 @@ import { observer } from "mobx-react";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import styled, { css } from "styled-components";
+import { s } from "@shared/styles";
 import User from "~/models/User";
-import Avatar from "~/components/Avatar";
 import Tooltip from "~/components/Tooltip";
+import Avatar, { AvatarSize } from "./Avatar";
 
 type Props = {
   user: User;
@@ -13,6 +14,8 @@ type Props = {
   isObserving: boolean;
   isCurrentUser: boolean;
   onClick?: React.MouseEventHandler<HTMLImageElement>;
+  size?: AvatarSize;
+  style?: React.CSSProperties;
 };
 
 function AvatarWithPresence({
@@ -22,6 +25,8 @@ function AvatarWithPresence({
   isEditing,
   isObserving,
   isCurrentUser,
+  size = AvatarSize.Large,
+  style,
 }: Props) {
   const { t } = useTranslation();
   const status = isPresent
@@ -33,7 +38,7 @@ function AvatarWithPresence({
   return (
     <>
       <Tooltip
-        tooltip={
+        content={
           <Centered>
             <strong>{user.name}</strong> {isCurrentUser && `(${t("You")})`}
             {status && (
@@ -46,13 +51,14 @@ function AvatarWithPresence({
         }
         placement="bottom"
       >
-        <AvatarWrapper
+        <AvatarPresence
           $isPresent={isPresent}
           $isObserving={isObserving}
           $color={user.color}
+          style={style}
         >
-          <Avatar model={user} onClick={onClick} size={32} />
-        </AvatarWrapper>
+          <Avatar model={user} onClick={onClick} size={size} />
+        </AvatarPresence>
       </Tooltip>
     </>
   );
@@ -68,7 +74,7 @@ type AvatarWrapperProps = {
   $color: string;
 };
 
-const AvatarWrapper = styled.div<AvatarWrapperProps>`
+const AvatarPresence = styled.div<AvatarWrapperProps>`
   opacity: ${(props) => (props.$isPresent ? 1 : 0.5)};
   transition: opacity 250ms ease-in-out;
   border-radius: 50%;
@@ -106,7 +112,7 @@ const AvatarWrapper = styled.div<AvatarWrapperProps>`
 
       &:hover:after {
         border: 2px solid ${(props) => props.$color};
-        box-shadow: inset 0 0 0 2px ${(props) => props.theme.background};
+        box-shadow: inset 0 0 0 2px ${s("background")};
       }
     `}
 `;

@@ -1,21 +1,26 @@
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { subDays } from "date-fns";
 import { m } from "framer-motion";
 import { observer } from "mobx-react";
-import { CloseIcon, DocumentIcon, ClockIcon } from "outline-icons";
+import { CloseIcon, DocumentIcon, ClockIcon, EyeIcon } from "outline-icons";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import styled, { useTheme } from "styled-components";
+import Icon from "@shared/components/Icon";
+import Squircle from "@shared/components/Squircle";
+import { s, hover, ellipsis } from "@shared/styles";
+import { IconType } from "@shared/types";
+import { determineIconType } from "@shared/utils/icon";
 import Document from "~/models/Document";
 import Pin from "~/models/Pin";
 import Flex from "~/components/Flex";
 import NudeButton from "~/components/NudeButton";
 import Time from "~/components/Time";
 import useStores from "~/hooks/useStores";
-import CollectionIcon from "./CollectionIcon";
-import EmojiIcon from "./EmojiIcon";
-import Squircle from "./Squircle";
+import { useTextStats } from "~/hooks/useTextStats";
+import CollectionIcon from "./Icons/CollectionIcon";
 import Text from "./Text";
 import Tooltip from "./Tooltip";
 
@@ -35,7 +40,10 @@ function DocumentCard(props: Props) {
   const { collections } = useStores();
   const theme = useTheme();
   const { document, pin, canUpdatePin, isDraggable } = props;
-  const collection = collections.get(document.collectionId);
+  const pinnedToHome = React.useRef(!pin?.collectionId).current;
+  const collection = document.collectionId
+    ? collections.get(document.collectionId)
+    : undefined;
   const {
     attributes,
     listeners,
@@ -48,19 +56,25 @@ function DocumentCard(props: Props) {
     disabled: !isDraggable || !canUpdatePin,
   });
 
+  const hasEmojiInTitle = determineIconType(document.icon) === IconType.Emoji;
+
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
   };
 
   const handleUnpin = React.useCallback(
-    (ev) => {
+    async (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
-      pin?.delete();
+      await pin?.delete();
     },
     [pin]
   );
+
+  // If the document was updated within the last 7 days, show a timestamp instead of reading time
+  const isRecentlyUpdated =
+    new Date(document.updatedAt) > subDays(new Date(), 7);
 
   return (
     <Reorderable
@@ -105,15 +119,22 @@ function DocumentCard(props: Props) {
               <path d="M19.5 19.5H6C2.96243 19.5 0.5 17.0376 0.5 14V0.5H0.792893L19.5 19.2071V19.5Z" />
             </Fold>
 
-            {document.emoji ? (
-              <Squircle color={theme.slateLight}>
-                <EmojiIcon emoji={document.emoji} size={26} />
-              </Squircle>
+            {document.icon ? (
+              <DocumentSquircle
+                icon={document.icon}
+                color={document.color ?? undefined}
+              />
             ) : (
-              <Squircle color={collection?.color}>
+              <Squircle
+                color={
+                  collection?.color ??
+                  (pinnedToHome ? theme.slateLight : theme.slateDark)
+                }
+              >
                 {collection?.icon &&
+                collection?.icon !== "letter" &&
                 collection?.icon !== "collection" &&
-                !pin?.collectionId ? (
+                pinnedToHome ? (
                   <CollectionIcon collection={collection} color="white" />
                 ) : (
                   <DocumentIcon color="white" />
@@ -122,27 +143,28 @@ function DocumentCard(props: Props) {
             )}
             <div>
               <Heading dir={document.dir}>
-                {document.emoji
-                  ? document.titleWithDefault.replace(document.emoji, "")
+                {hasEmojiInTitle
+                  ? document.titleWithDefault.replace(document.icon!, "")
                   : document.titleWithDefault}
               </Heading>
               <DocumentMeta size="xsmall">
-                <Clock color="currentColor" size={18} />
-                <Time
-                  dateTime={document.updatedAt}
-                  tooltipDelay={500}
-                  addSuffix
-                  shorten
-                />
+                {isRecentlyUpdated ? (
+                  <>
+                    <Clock size={18} />
+                    <Time dateTime={document.updatedAt} addSuffix shorten />
+                  </>
+                ) : (
+                  <ReadingTime document={document} />
+                )}
               </DocumentMeta>
             </div>
           </Content>
           {canUpdatePin && (
             <Actions dir={document.dir} gap={4}>
               {!isDragging && pin && (
-                <Tooltip tooltip={t("Unpin")}>
+                <Tooltip content={t("Unpin")}>
                   <PinButton onClick={handleUnpin} aria-label={t("Unpin")}>
-                    <CloseIcon color="currentColor" />
+                    <CloseIcon />
                   </PinButton>
                 </Tooltip>
               )}
@@ -154,6 +176,39 @@ function DocumentCard(props: Props) {
   );
 }
 
+const ReadingTime = ({ document }: { document: Document }) => {
+  const { t } = useTranslation();
+  const markdown = React.useMemo(() => document.toMarkdown(), [document]);
+  const stats = useTextStats(markdown);
+
+  return (
+    <>
+      <EyeIcon size={18} />
+      {t(`{{ minutes }}m read`, {
+        minutes: stats.total.readingTime,
+      })}
+    </>
+  );
+};
+
+const DocumentSquircle = ({
+  icon,
+  color,
+}: {
+  icon: string;
+  color?: string;
+}) => {
+  const theme = useTheme();
+  const iconType = determineIconType(icon)!;
+  const squircleColor = iconType === IconType.SVG ? color : theme.slateLight;
+
+  return (
+    <Squircle color={squircleColor}>
+      <Icon value={icon} color={theme.white} forceColor />
+    </Squircle>
+  );
+};
+
 const Clock = styled(ClockIcon)`
   flex-shrink: 0;
 `;
@@ -164,9 +219,9 @@ const AnimatePresence = styled(m.div)`
 `;
 
 const Fold = styled.svg`
-  fill: ${(props) => props.theme.background};
-  stroke: ${(props) => props.theme.inputBorder};
-  background: ${(props) => props.theme.background};
+  fill: ${s("background")};
+  stroke: ${s("inputBorder")};
+  background: ${s("background")};
 
   position: absolute;
   top: -1px;
@@ -174,11 +229,11 @@ const Fold = styled.svg`
 `;
 
 const PinButton = styled(NudeButton)`
-  color: ${(props) => props.theme.textTertiary};
+  color: ${s("textTertiary")};
 
-  &:hover,
+  &:${hover},
   &:active {
-    color: ${(props) => props.theme.text};
+    color: ${s("text")};
   }
 `;
 
@@ -188,7 +243,7 @@ const Actions = styled(Flex)`
   right: ${(props) => (props.dir === "rtl" ? "auto" : "4px")};
   left: ${(props) => (props.dir === "rtl" ? "4px" : "auto")};
   opacity: 0;
-  color: ${(props) => props.theme.textTertiary};
+  color: ${s("textTertiary")};
 
   // move actions above content
   z-index: 2;
@@ -206,7 +261,7 @@ const Reorderable = styled.div<{ $isDragging: boolean }>`
   z-index: ${(props) => (props.$isDragging ? 1 : "inherit")};
   pointer-events: ${(props) => (props.$isDragging ? "none" : "inherit")};
 
-  &:hover ${Actions} {
+  &: ${hover} ${Actions} {
     opacity: 1;
   }
 `;
@@ -217,14 +272,12 @@ const Content = styled(Flex)`
 `;
 
 const DocumentMeta = styled(Text)`
+  ${ellipsis()}
   display: flex;
   align-items: center;
   gap: 2px;
-  color: ${(props) => props.theme.textTertiary};
+  color: ${s("textTertiary")};
   margin: 0 0 0 -2px;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  overflow: hidden;
 `;
 
 const DocumentLink = styled(Link)<{
@@ -237,9 +290,9 @@ const DocumentLink = styled(Link)<{
   height: 100%;
   border-radius: 8px;
   cursor: var(--pointer);
-  background: ${(props) => props.theme.background};
+  background: ${s("background")};
   transition: transform 50ms ease-in-out;
-  border: 1px solid ${(props) => props.theme.inputBorder};
+  border: 1px solid ${s("inputBorder")};
   border-bottom-width: 2px;
   border-right-width: 2px;
 
@@ -247,7 +300,7 @@ const DocumentLink = styled(Link)<{
     opacity: 0;
   }
 
-  &:hover,
+  &:${hover},
   &:active,
   &:focus,
   &:focus-within {
@@ -276,9 +329,9 @@ const Heading = styled.h3`
   max-height: 66px; // 3*line-height
   overflow: hidden;
 
-  color: ${(props) => props.theme.text};
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
-    Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
+  color: ${s("text")};
+  font-family: ${s("fontFamily")};
+  font-weight: 500;
 `;
 
 export default observer(DocumentCard);

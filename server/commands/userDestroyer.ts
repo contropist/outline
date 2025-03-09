@@ -1,37 +1,42 @@
 import { Op } from "sequelize";
-import { sequelize } from "@server/database/sequelize";
+import { UserRole } from "@shared/types";
 import { Event, User } from "@server/models";
+import { APIContext } from "@server/types";
 import { ValidationError } from "../errors";
 
-export default async function userDestroyer({
-  user,
-  actor,
-  ip,
-}: {
-  user: User;
-  actor: User;
-  ip: string;
-}) {
+export default async function userDestroyer(
+  ctx: APIContext,
+  {
+    user,
+  }: {
+    user: User;
+  }
+) {
+  const { transaction } = ctx.state;
   const { teamId } = user;
   const usersCount = await User.count({
     where: {
       teamId,
     },
+    transaction,
   });
 
   if (usersCount === 1) {
-    throw ValidationError("Cannot delete last user on the team.");
+    throw ValidationError(
+      "Cannot delete last user on the team, delete the workspace instead."
+    );
   }
 
   if (user.isAdmin) {
     const otherAdminsCount = await User.count({
       where: {
-        isAdmin: true,
+        role: UserRole.Admin,
         teamId,
         id: {
           [Op.ne]: user.id,
         },
       },
+      transaction,
     });
 
     if (otherAdminsCount === 0) {
@@ -41,33 +46,15 @@ export default async function userDestroyer({
     }
   }
 
-  const transaction = await sequelize.transaction();
-  let response;
+  await Event.createFromContext(ctx, {
+    name: "users.delete",
+    userId: user.id,
+    data: {
+      name: user.name,
+    },
+  });
 
-  try {
-    response = await user.destroy({
-      transaction,
-    });
-    await Event.create(
-      {
-        name: "users.delete",
-        actorId: actor.id,
-        userId: user.id,
-        teamId,
-        data: {
-          name: user.name,
-        },
-        ip,
-      },
-      {
-        transaction,
-      }
-    );
-    await transaction.commit();
-  } catch (err) {
-    await transaction.rollback();
-    throw err;
-  }
-
-  return response;
+  return user.destroy({
+    transaction,
+  });
 }

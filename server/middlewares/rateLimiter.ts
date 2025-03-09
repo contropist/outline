@@ -1,10 +1,11 @@
 import { Context, Next } from "koa";
-import { defaults } from "lodash";
-import RateLimiter from "@server/RateLimiter";
+import defaults from "lodash/defaults";
 import env from "@server/env";
 import { RateLimitExceededError } from "@server/errors";
+import Logger from "@server/logging/Logger";
 import Metrics from "@server/logging/Metrics";
-import Redis from "@server/redis";
+import Redis from "@server/storage/redis";
+import RateLimiter from "@server/utils/RateLimiter";
 
 /**
  * Middleware that limits the number of requests that are allowed within a given
@@ -27,19 +28,23 @@ export function defaultRateLimiter() {
     try {
       await limiter.consume(key);
     } catch (rateLimiterRes) {
-      ctx.set("Retry-After", `${rateLimiterRes.msBeforeNext / 1000}`);
-      ctx.set("RateLimit-Limit", `${limiter.points}`);
-      ctx.set("RateLimit-Remaining", `${rateLimiterRes.remainingPoints}`);
-      ctx.set(
-        "RateLimit-Reset",
-        `${new Date(Date.now() + rateLimiterRes.msBeforeNext)}`
-      );
+      if (rateLimiterRes.msBeforeNext) {
+        ctx.set("Retry-After", `${rateLimiterRes.msBeforeNext / 1000}`);
+        ctx.set("RateLimit-Limit", `${limiter.points}`);
+        ctx.set("RateLimit-Remaining", `${rateLimiterRes.remainingPoints}`);
+        ctx.set(
+          "RateLimit-Reset",
+          `${new Date(Date.now() + rateLimiterRes.msBeforeNext)}`
+        );
 
-      Metrics.increment("rate_limit.exceeded", {
-        path: ctx.path,
-      });
+        Metrics.increment("rate_limit.exceeded", {
+          path: ctx.path,
+        });
 
-      throw RateLimitExceededError();
+        throw RateLimitExceededError();
+      } else {
+        Logger.error("Rate limiter error", rateLimiterRes);
+      }
     }
 
     return next();
@@ -68,9 +73,11 @@ export function rateLimiter(config: RateLimiterConfig) {
       return next();
     }
 
-    if (!RateLimiter.hasRateLimiter(ctx.path)) {
+    const fullPath = `${ctx.mountPath ?? ""}${ctx.path}`;
+
+    if (!RateLimiter.hasRateLimiter(fullPath)) {
       RateLimiter.setRateLimiter(
-        ctx.path,
+        fullPath,
         defaults(
           {
             ...config,

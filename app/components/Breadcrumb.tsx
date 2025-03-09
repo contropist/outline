@@ -2,22 +2,22 @@ import { GoToIcon } from "outline-icons";
 import * as React from "react";
 import { Link } from "react-router-dom";
 import styled from "styled-components";
+import { s, ellipsis } from "@shared/styles";
 import Flex from "~/components/Flex";
 import BreadcrumbMenu from "~/menus/BreadcrumbMenu";
+import { undraggableOnDesktop } from "~/styles";
 import { MenuInternalLink } from "~/types";
 
-type Props = {
+type Props = React.PropsWithChildren<{
   items: MenuInternalLink[];
   max?: number;
   highlightFirstItem?: boolean;
-};
+}>;
 
-function Breadcrumb({
-  items,
-  highlightFirstItem,
-  children,
-  max = 2,
-}: React.PropsWithChildren<Props>) {
+function Breadcrumb(
+  { items, highlightFirstItem, children, max = 2 }: Props,
+  ref: React.RefObject<HTMLDivElement> | null
+) {
   const totalItems = items.length;
   const topLevelItems: MenuInternalLink[] = [...items];
   let overflowItems;
@@ -35,9 +35,13 @@ function Breadcrumb({
   }
 
   return (
-    <Flex justify="flex-start" align="center">
+    <Flex justify="flex-start" align="center" ref={ref}>
       {topLevelItems.map((item, index) => (
-        <React.Fragment key={String(item.to) || index}>
+        <React.Fragment
+          key={
+            (typeof item.to === "string" ? item.to : item.to.pathname) || index
+          }
+        >
           {item.icon}
           {item.to ? (
             <Item
@@ -60,20 +64,20 @@ function Breadcrumb({
 
 const Slash = styled(GoToIcon)`
   flex-shrink: 0;
-  fill: ${(props) => props.theme.divider};
+  fill: ${s("divider")};
 `;
 
 const Item = styled(Link)<{ $highlight: boolean; $withIcon: boolean }>`
+  ${ellipsis()}
+  ${undraggableOnDesktop()}
+
   display: flex;
   flex-shrink: 1;
   min-width: 0;
   cursor: var(--pointer);
-  color: ${(props) => props.theme.text};
+  color: ${s("text")};
   font-size: 15px;
   height: 24px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  overflow: hidden;
   font-weight: ${(props) => (props.$highlight ? "500" : "inherit")};
   margin-left: ${(props) => (props.$withIcon ? "4px" : "0")};
 
@@ -86,4 +90,4 @@ const Item = styled(Link)<{ $highlight: boolean; $withIcon: boolean }>`
   }
 `;
 
-export default Breadcrumb;
+export default React.forwardRef<HTMLDivElement, Props>(Breadcrumb);

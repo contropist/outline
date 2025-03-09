@@ -1,11 +1,12 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import styled from "styled-components";
+import { s } from "@shared/styles";
+import { isMac } from "@shared/utils/browser";
+import { metaDisplay, altDisplay } from "@shared/utils/keyboard";
 import Flex from "~/components/Flex";
 import InputSearch from "~/components/InputSearch";
 import Key from "~/components/Key";
-import { isMac } from "~/utils/browser";
-import { metaDisplay, altDisplay } from "~/utils/keyboard";
 
 function KeyboardShortcuts() {
   const { t } = useTranslation();
@@ -21,6 +22,22 @@ function KeyboardShortcuts() {
               </>
             ),
             label: t("Open command menu"),
+          },
+          {
+            shortcut: (
+              <>
+                <Key symbol>{metaDisplay}</Key> + <Key symbol>[</Key>
+              </>
+            ),
+            label: t("Back"),
+          },
+          {
+            shortcut: (
+              <>
+                <Key symbol>{metaDisplay}</Key> + <Key symbol>]</Key>
+              </>
+            ),
+            label: t("Forward"),
           },
           {
             shortcut: <Key>n</Key>,
@@ -64,7 +81,7 @@ function KeyboardShortcuts() {
                 <Key symbol>{metaDisplay}</Key> + <Key>.</Key>
               </>
             ),
-            label: t("Toggle navigation"),
+            label: t("Toggle sidebar"),
           },
           {
             shortcut: (
@@ -81,7 +98,7 @@ function KeyboardShortcuts() {
           {
             shortcut: (
               <>
-                <Key symbol>{metaDisplay}</Key> + <Key>Enter</Key>
+                <Key symbol>{metaDisplay}</Key> + <Key>{t("Enter")}</Key>
               </>
             ),
             label: t("Go to link"),
@@ -110,6 +127,19 @@ function KeyboardShortcuts() {
               </>
             ),
             label: t("Cancel editing"),
+          },
+        ],
+      },
+      {
+        title: t("Collaboration"),
+        items: [
+          {
+            shortcut: (
+              <>
+                <Key symbol>{metaDisplay}</Key> + <Key>Alt</Key> + <Key>m</Key>
+              </>
+            ),
+            label: t("Comment"),
           },
         ],
       },
@@ -167,6 +197,23 @@ function KeyboardShortcuts() {
           {
             shortcut: (
               <>
+                <Key symbol>{metaDisplay}</Key> + <Key symbol>⇧</Key> +{" "}
+                <Key>c</Key>
+              </>
+            ),
+            label: t("Code"),
+          },
+          {
+            shortcut: (
+              <>
+                <Key symbol>{metaDisplay}</Key> + <Key>Ctrl</Key> + <Key>h</Key>
+              </>
+            ),
+            label: t("Highlight"),
+          },
+          {
+            shortcut: (
+              <>
                 <Key symbol>{metaDisplay}</Key> + <Key>i</Key>
               </>
             ),
@@ -175,10 +222,10 @@ function KeyboardShortcuts() {
           {
             shortcut: (
               <>
-                <Key symbol>{metaDisplay}</Key> + <Key>u</Key>
+                <Key symbol>{metaDisplay}</Key> + <Key>k</Key>
               </>
             ),
-            label: t("Underline"),
+            label: t("Link"),
           },
           {
             shortcut: (
@@ -191,10 +238,10 @@ function KeyboardShortcuts() {
           {
             shortcut: (
               <>
-                <Key symbol>{metaDisplay}</Key> + <Key>k</Key>
+                <Key symbol>{metaDisplay}</Key> + <Key>u</Key>
               </>
             ),
-            label: t("Link"),
+            label: t("Underline"),
           },
           {
             shortcut: (
@@ -243,13 +290,21 @@ function KeyboardShortcuts() {
             label: t("Ordered list"),
           },
           {
-            shortcut: <Key>Tab</Key>,
+            shortcut: (
+              <>
+                <Key symbol>{metaDisplay}</Key> + <Key>Enter</Key>
+              </>
+            ),
+            label: t("Toggle task list item"),
+          },
+          {
+            shortcut: <Key>{t("Tab")}</Key>,
             label: t("Indent list item"),
           },
           {
             shortcut: (
               <>
-                <Key symbol>⇧</Key> + <Key>Tab</Key>
+                <Key symbol>⇧</Key> + <Key>{t("Tab")}</Key>
               </>
             ),
             label: t("Outdent list item"),
@@ -273,12 +328,37 @@ function KeyboardShortcuts() {
         ],
       },
       {
-        title: "Markdown",
+        title: t("Tables"),
         items: [
           {
             shortcut: (
               <>
-                <Key>#</Key> <Key>Space</Key>
+                <Key symbol>{metaDisplay}</Key> + <Key>{t("Enter")}</Key>
+              </>
+            ),
+            label: t("Insert row"),
+          },
+          {
+            shortcut: <Key>{t("Tab")}</Key>,
+            label: t("Next cell"),
+          },
+          {
+            shortcut: (
+              <>
+                <Key symbol>⇧</Key> + <Key>{t("Tab")}</Key>
+              </>
+            ),
+            label: t("Previous cell"),
+          },
+        ],
+      },
+      {
+        title: t("Markdown"),
+        items: [
+          {
+            shortcut: (
+              <>
+                <Key>#</Key> <Key>{t("Space")}</Key>
               </>
             ),
             label: t("Large header"),
@@ -286,7 +366,7 @@ function KeyboardShortcuts() {
           {
             shortcut: (
               <>
-                <Key>##</Key> <Key>Space</Key>
+                <Key>##</Key> <Key>{t("Space")}</Key>
               </>
             ),
             label: t("Medium header"),
@@ -294,7 +374,7 @@ function KeyboardShortcuts() {
           {
             shortcut: (
               <>
-                <Key>###</Key> <Key>Space</Key>
+                <Key>###</Key> <Key>{t("Space")}</Key>
               </>
             ),
             label: t("Small header"),
@@ -302,7 +382,7 @@ function KeyboardShortcuts() {
           {
             shortcut: (
               <>
-                <Key>1.</Key> <Key>Space</Key>
+                <Key>1.</Key> <Key>{t("Space")}</Key>
               </>
             ),
             label: t("Numbered list"),
@@ -310,7 +390,7 @@ function KeyboardShortcuts() {
           {
             shortcut: (
               <>
-                <Key>-</Key> <Key>Space</Key>
+                <Key>-</Key> <Key>{t("Space")}</Key>
               </>
             ),
             label: t("Bulleted list"),
@@ -318,7 +398,7 @@ function KeyboardShortcuts() {
           {
             shortcut: (
               <>
-                <Key>[ ]</Key> <Key>Space</Key>
+                <Key>[ ]</Key> <Key>{t("Space")}</Key>
               </>
             ),
             label: t("Todo list"),
@@ -326,7 +406,7 @@ function KeyboardShortcuts() {
           {
             shortcut: (
               <>
-                <Key>&gt;</Key> <Key>Space</Key>
+                <Key>&gt;</Key> <Key>{t("Space")}</Key>
               </>
             ),
             label: t("Blockquote"),
@@ -342,7 +422,7 @@ function KeyboardShortcuts() {
           {
             shortcut: (
               <>
-                <Key>$$</Key> <Key>Space</Key>
+                <Key>$$$</Key> <Key>{t("Space")}</Key>
               </>
             ),
             label: t("LaTeX block"),
@@ -368,7 +448,7 @@ function KeyboardShortcuts() {
             label: t("Inline code"),
           },
           {
-            shortcut: "$latex$",
+            shortcut: "$$latex$$",
             label: t("Inline LaTeX"),
           },
           {
@@ -377,13 +457,32 @@ function KeyboardShortcuts() {
           },
         ],
       },
+      {
+        title: t("Triggers"),
+        items: [
+          {
+            shortcut: "@",
+            label: t("Mention users and more"),
+          },
+          {
+            shortcut: ":",
+            label: t("Emoji"),
+          },
+          {
+            shortcut: "/",
+            label: t("Insert block"),
+          },
+        ],
+      },
     ],
     [t]
   );
   const [searchTerm, setSearchTerm] = React.useState("");
+  const normalizedSearchTerm = searchTerm.toLocaleLowerCase();
   const handleChange = React.useCallback((event) => {
     setSearchTerm(event.target.value);
   }, []);
+
   const handleKeyDown = React.useCallback((event) => {
     if (event.currentTarget.value && event.key === "Escape") {
       event.preventDefault();
@@ -391,17 +490,20 @@ function KeyboardShortcuts() {
       setSearchTerm("");
     }
   }, []);
+
   return (
     <Flex column>
-      <InputSearch
-        onChange={handleChange}
-        onKeyDown={handleKeyDown}
-        value={searchTerm}
-      />
+      <StickySearch>
+        <InputSearch
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          value={searchTerm}
+        />
+      </StickySearch>
       {categories.map((category, x) => {
         const filtered = searchTerm
           ? category.items.filter((item) =>
-              item.label.toLowerCase().includes(searchTerm.toLowerCase())
+              item.label.toLocaleLowerCase().includes(normalizedSearchTerm)
             )
           : category.items;
 
@@ -429,6 +531,16 @@ function KeyboardShortcuts() {
   );
 }
 
+const StickySearch = styled.div`
+  position: sticky;
+  top: -16px;
+  z-index: 1;
+  padding: 16px;
+  margin: -16px;
+  background: ${s("background")};
+  border-radius: 8px;
+`;
+
 const Header = styled.h2`
   font-size: 15px;
   font-weight: 500;
@@ -441,6 +553,7 @@ const List = styled.dl`
   overflow: hidden;
   padding: 0;
   margin: 0;
+  user-select: none;
 `;
 
 const Keys = styled.dt`
@@ -450,7 +563,7 @@ const Keys = styled.dt`
   clear: left;
   text-align: right;
   font-size: 12px;
-  color: ${(props) => props.theme.textSecondary};
+  color: ${s("textSecondary")};
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -462,7 +575,7 @@ const Label = styled.dd`
   margin: 0 0 10px;
   display: flex;
   align-items: center;
-  color: ${(props) => props.theme.textSecondary};
+  color: ${s("textSecondary")};
 `;
 
 export default React.memo(KeyboardShortcuts);

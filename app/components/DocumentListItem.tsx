@@ -1,28 +1,30 @@
+import {
+  useFocusEffect,
+  useRovingTabIndex,
+} from "@getoutline/react-roving-tabindex";
 import { observer } from "mobx-react";
-import { PlusIcon } from "outline-icons";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
-import { CompositeStateReturn, CompositeItem } from "reakit/Composite";
 import styled, { css } from "styled-components";
 import breakpoint from "styled-components-breakpoint";
+import EventBoundary from "@shared/components/EventBoundary";
+import Icon from "@shared/components/Icon";
+import { s, hover } from "@shared/styles";
 import Document from "~/models/Document";
 import Badge from "~/components/Badge";
-import Button from "~/components/Button";
 import DocumentMeta from "~/components/DocumentMeta";
-import EventBoundary from "~/components/EventBoundary";
 import Flex from "~/components/Flex";
 import Highlight from "~/components/Highlight";
 import NudeButton from "~/components/NudeButton";
 import StarButton, { AnimatedStar } from "~/components/Star";
 import Tooltip from "~/components/Tooltip";
 import useBoolean from "~/hooks/useBoolean";
-import useCurrentTeam from "~/hooks/useCurrentTeam";
 import useCurrentUser from "~/hooks/useCurrentUser";
-import usePolicy from "~/hooks/usePolicy";
+import { useLocationSidebarContext } from "~/hooks/useLocationSidebarContext";
 import DocumentMenu from "~/menus/DocumentMenu";
-import { hover } from "~/styles";
-import { newDocumentPath } from "~/utils/routeHelpers";
+import { documentPath } from "~/utils/routeHelpers";
+import { determineSidebarContext } from "./Sidebar/components/SidebarContext";
 
 type Props = {
   document: Document;
@@ -34,14 +36,13 @@ type Props = {
   showPin?: boolean;
   showDraft?: boolean;
   showTemplate?: boolean;
-} & CompositeStateReturn;
+};
 
 const SEARCH_RESULT_REGEX = /<b\b[^>]*>(.*?)<\/b>/gi;
 
 function replaceResultMarks(tag: string) {
-  // don't use SEARCH_RESULT_REGEX here as it causes
-  // an infinite loop to trigger a regex inside it's own callback
-  return tag.replace(/<b\b[^>]*>(.*?)<\/b>/gi, "$1");
+  // don't use SEARCH_RESULT_REGEX directly here as it causes an infinite loop
+  return tag.replace(new RegExp(SEARCH_RESULT_REGEX.source), "$1");
 }
 
 function DocumentListItem(
@@ -50,8 +51,17 @@ function DocumentListItem(
 ) {
   const { t } = useTranslation();
   const user = useCurrentUser();
-  const team = useCurrentTeam();
+  const locationSidebarContext = useLocationSidebarContext();
   const [menuOpen, handleMenuOpen, handleMenuClose] = useBoolean();
+
+  let itemRef: React.Ref<HTMLAnchorElement> =
+    React.useRef<HTMLAnchorElement>(null);
+  if (ref) {
+    itemRef = ref;
+  }
+
+  const { focused, ...rovingTabIndex } = useRovingTabIndex(itemRef, false);
+  useFocusEffect(focused, itemRef);
 
   const {
     document,
@@ -68,50 +78,56 @@ function DocumentListItem(
   const queryIsInTitle =
     !!highlight &&
     !!document.title.toLowerCase().includes(highlight.toLowerCase());
-  const canStar =
-    !document.isDraft && !document.isArchived && !document.isTemplate;
-  const can = usePolicy(team);
-  const canCollection = usePolicy(document.collectionId);
+  const canStar = !document.isArchived && !document.isTemplate;
+
+  const sidebarContext = determineSidebarContext({
+    document,
+    user,
+    currentContext: locationSidebarContext,
+  });
 
   return (
-    <CompositeItem
-      as={DocumentLink}
-      ref={ref}
+    <DocumentLink
+      ref={itemRef}
       dir={document.dir}
       role="menuitem"
       $isStarred={document.isStarred}
       $menuOpen={menuOpen}
       to={{
-        pathname: document.url,
+        pathname: documentPath(document),
         state: {
           title: document.titleWithDefault,
+          sidebarContext,
         },
       }}
       {...rest}
+      {...rovingTabIndex}
     >
       <Content>
         <Heading dir={document.dir}>
+          {document.icon && (
+            <>
+              <Icon value={document.icon} color={document.color ?? undefined} />
+              &nbsp;
+            </>
+          )}
           <Title
             text={document.titleWithDefault}
             highlight={highlight}
             dir={document.dir}
           />
-          {document.isBadgedNew && document.createdBy.id !== user.id && (
+          {document.isBadgedNew && document.createdBy?.id !== user.id && (
             <Badge yellow>{t("New")}</Badge>
+          )}
+          {document.isDraft && showDraft && (
+            <Tooltip content={t("Only visible to you")} placement="top">
+              <Badge>{t("Draft")}</Badge>
+            </Tooltip>
           )}
           {canStar && (
             <StarPositioner>
               <StarButton document={document} />
             </StarPositioner>
-          )}
-          {document.isDraft && showDraft && (
-            <Tooltip
-              tooltip={t("Only visible to you")}
-              delay={500}
-              placement="top"
-            >
-              <Badge>{t("Draft")}</Badge>
-            </Tooltip>
           )}
           {document.isTemplate && showTemplate && (
             <Badge primary>{t("Template")}</Badge>
@@ -134,25 +150,6 @@ function DocumentListItem(
         />
       </Content>
       <Actions>
-        {document.isTemplate &&
-          !document.isArchived &&
-          !document.isDeleted &&
-          can.createDocument &&
-          canCollection.update && (
-            <>
-              <Button
-                as={Link}
-                to={newDocumentPath(document.collectionId, {
-                  templateId: document.id,
-                })}
-                icon={<PlusIcon />}
-                neutral
-              >
-                {t("New doc")}
-              </Button>
-              &nbsp;
-            </>
-          )}
         <DocumentMenu
           document={document}
           showPin={showPin}
@@ -161,7 +158,7 @@ function DocumentListItem(
           modal={false}
         />
       </Actions>
-    </CompositeItem>
+    </DocumentLink>
   );
 }
 
@@ -177,11 +174,11 @@ const Actions = styled(EventBoundary)`
   margin: 8px;
   flex-shrink: 0;
   flex-grow: 0;
+  color: ${s("textSecondary")};
 
   ${NudeButton} {
-    &:hover,
-    &[aria-expanded="true"] {
-      background: ${(props) => props.theme.sidebarControlHoverBackground};
+    &: ${hover}, &[aria-expanded= "true"] {
+      background: ${s("sidebarControlHoverBackground")};
     }
   }
 
@@ -223,7 +220,7 @@ const DocumentLink = styled(Link)<{
   &:active,
   &:focus,
   &:focus-within {
-    background: ${(props) => props.theme.listItemHoverBackground};
+    background: ${s("listItemHoverBackground")};
 
     ${Actions} {
       opacity: 1;
@@ -232,7 +229,7 @@ const DocumentLink = styled(Link)<{
     ${AnimatedStar} {
       opacity: 0.5;
 
-      &:hover {
+      &:${hover} {
         opacity: 1;
       }
     }
@@ -241,7 +238,7 @@ const DocumentLink = styled(Link)<{
   ${(props) =>
     props.$menuOpen &&
     css`
-      background: ${(props) => props.theme.listItemHoverBackground};
+      background: ${s("listItemHoverBackground")};
 
       ${Actions} {
         opacity: 1;
@@ -257,14 +254,12 @@ const Heading = styled.h3<{ rtl?: boolean }>`
   display: flex;
   justify-content: ${(props) => (props.rtl ? "flex-end" : "flex-start")};
   align-items: center;
-  height: 24px;
   margin-top: 0;
   margin-bottom: 0.25em;
-  overflow: hidden;
   white-space: nowrap;
-  color: ${(props) => props.theme.text};
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
-    Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
+  color: ${s("text")};
+  font-family: ${s("fontFamily")};
+  font-weight: 500;
 `;
 
 const StarPositioner = styled(Flex)`
@@ -280,10 +275,12 @@ const Title = styled(Highlight)`
 
 const ResultContext = styled(Highlight)`
   display: block;
-  color: ${(props) => props.theme.textTertiary};
-  font-size: 14px;
+  color: ${s("textSecondary")};
+  font-size: 15px;
   margin-top: -0.25em;
   margin-bottom: 0.25em;
+  max-height: 90px;
+  overflow: hidden;
 `;
 
 export default observer(React.forwardRef(DocumentListItem));

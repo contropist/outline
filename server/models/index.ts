@@ -8,9 +8,11 @@ export { default as Backlink } from "./Backlink";
 
 export { default as Collection } from "./Collection";
 
-export { default as CollectionGroup } from "./CollectionGroup";
+export { default as GroupMembership } from "./GroupMembership";
 
-export { default as CollectionUser } from "./CollectionUser";
+export { default as UserMembership } from "./UserMembership";
+
+export { default as Comment } from "./Comment";
 
 export { default as Document } from "./Document";
 
@@ -28,9 +30,9 @@ export { default as IntegrationAuthentication } from "./IntegrationAuthenticatio
 
 export { default as Notification } from "./Notification";
 
-export { default as NotificationSetting } from "./NotificationSetting";
-
 export { default as Pin } from "./Pin";
+
+export { default as Reaction } from "./Reaction";
 
 export { default as Revision } from "./Revision";
 

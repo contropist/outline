@@ -3,20 +3,15 @@ import { TableOfContentsIcon } from "outline-icons";
 import * as React from "react";
 import { useTranslation } from "react-i18next";
 import { MenuButton, useMenuState } from "reakit/Menu";
+import styled from "styled-components";
 import Button from "~/components/Button";
 import ContextMenu from "~/components/ContextMenu";
 import Template from "~/components/ContextMenu/Template";
+import { useDocumentContext } from "~/components/DocumentContext";
 import { MenuItem } from "~/types";
 
-type Props = {
-  headings: {
-    title: string;
-    level: number;
-    id: string;
-  }[];
-};
-
-function TableOfContentsMenu({ headings }: Props) {
+function TableOfContentsMenu() {
+  const { headings } = useDocumentContext();
   const menu = useMenuState({
     modal: true,
     unstable_preventOverflow: true,
@@ -29,28 +24,29 @@ function TableOfContentsMenu({ headings }: Props) {
     Infinity
   );
 
-  // @ts-expect-error check
   const items: MenuItem[] = React.useMemo(() => {
     const i = [
       {
         type: "heading",
-        visible: true,
         title: t("Contents"),
       },
       ...headings.map((heading) => ({
         type: "link",
         href: `#${heading.id}`,
-        title: t(heading.title),
+        title: <HeadingWrapper>{t(heading.title)}</HeadingWrapper>,
         level: heading.level - minHeading,
       })),
-    ];
+    ] as MenuItem[];
 
     if (i.length === 1) {
       i.push({
         type: "link",
         href: "#",
-        title: t("Headings you add to the document will appear here"),
-        // @ts-expect-error check
+        title: (
+          <HeadingWrapper>
+            {t("Headings you add to the document will appear here")}
+          </HeadingWrapper>
+        ),
         disabled: true,
       });
     }
@@ -65,7 +61,6 @@ function TableOfContentsMenu({ headings }: Props) {
           <Button
             {...props}
             icon={<TableOfContentsIcon />}
-            iconColor="currentColor"
             borderOnHover
             neutral
           />
@@ -77,5 +72,11 @@ function TableOfContentsMenu({ headings }: Props) {
     </>
   );
 }
+
+const HeadingWrapper = styled.div`
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+`;
 
 export default observer(TableOfContentsMenu);

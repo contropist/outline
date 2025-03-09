@@ -1,13 +1,13 @@
 import { Team } from "@server/models";
 
-export default function present(team: Team) {
+export default function presentTeam(team: Team) {
   return {
     id: team.id,
     name: team.name,
     avatarUrl: team.avatarUrl,
     sharing: team.sharing,
     memberCollectionCreate: team.memberCollectionCreate,
-    collaborativeEditing: team.collaborativeEditing,
+    memberTeamCreate: team.memberTeamCreate,
     defaultCollectionId: team.defaultCollectionId,
     documentEmbeds: team.documentEmbeds,
     guestSignin: team.emailSigninEnabled,

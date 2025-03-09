@@ -10,18 +10,26 @@ import Error from "~/components/List/Error";
 import PaginatedList from "~/components/PaginatedList";
 import { createCollection } from "~/actions/definitions/collections";
 import useStores from "~/hooks/useStores";
+import { DragObject } from "../hooks/useDragAndDrop";
 import DraggableCollectionLink from "./DraggableCollectionLink";
 import DropCursor from "./DropCursor";
 import Header from "./Header";
 import PlaceholderCollections from "./PlaceholderCollections";
 import Relative from "./Relative";
 import SidebarAction from "./SidebarAction";
-import { DragObject } from "./SidebarLink";
+import SidebarContext from "./SidebarContext";
 
 function Collections() {
   const { documents, collections } = useStores();
   const { t } = useTranslation();
   const orderedCollections = collections.orderedData;
+
+  const params = React.useMemo(
+    () => ({
+      limit: 100,
+    }),
+    []
+  );
 
   const [
     { isCollectionDropping, isDraggingAnyCollection },
@@ -29,60 +37,57 @@ function Collections() {
   ] = useDrop({
     accept: "collection",
     drop: async (item: DragObject) => {
-      collections.move(
+      void collections.move(
         item.id,
         fractionalIndex(null, orderedCollections[0].index)
       );
     },
-    canDrop: (item) => {
-      return item.id !== orderedCollections[0].id;
-    },
+    canDrop: (item) => item.id !== orderedCollections[0].id,
     collect: (monitor) => ({
       isCollectionDropping: monitor.isOver(),
       isDraggingAnyCollection: monitor.getItemType() === "collection",
     }),
   });
 
-  React.useEffect(() => {
-    collections.fetchPage({ limit: 100 });
-  }, [collections]);
-
   return (
-    <Flex column>
-      <Header id="collections" title={t("Collections")}>
-        <Relative>
-          <PaginatedList
-            aria-label={t("Collections")}
-            items={collections.orderedData}
-            loading={<PlaceholderCollections />}
-            heading={
-              isDraggingAnyCollection ? (
-                <DropCursor
-                  isActiveDrop={isCollectionDropping}
-                  innerRef={dropToReorderCollection}
-                  position="top"
+    <SidebarContext.Provider value="collections">
+      <Flex column>
+        <Header id="collections" title={t("Collections")}>
+          <Relative>
+            <PaginatedList
+              options={params}
+              aria-label={t("Collections")}
+              items={collections.allActive}
+              loading={<PlaceholderCollections />}
+              heading={
+                isDraggingAnyCollection ? (
+                  <DropCursor
+                    isActiveDrop={isCollectionDropping}
+                    innerRef={dropToReorderCollection}
+                    position="top"
+                  />
+                ) : undefined
+              }
+              renderError={(props) => <StyledError {...props} />}
+              renderItem={(item: Collection, index) => (
+                <DraggableCollectionLink
+                  key={item.id}
+                  collection={item}
+                  activeDocument={documents.active}
+                  prefetchDocument={documents.prefetchDocument}
+                  belowCollection={orderedCollections[index + 1]}
                 />
-              ) : undefined
-            }
-            renderError={(props) => <StyledError {...props} />}
-            renderItem={(item: Collection, index) => (
-              <DraggableCollectionLink
-                key={item.id}
-                collection={item}
-                activeDocument={documents.active}
-                prefetchDocument={documents.prefetchDocument}
-                belowCollection={orderedCollections[index + 1]}
-              />
-            )}
-          />
-          <SidebarAction action={createCollection} depth={0} />
-        </Relative>
-      </Header>
-    </Flex>
+              )}
+            />
+            <SidebarAction action={createCollection} depth={0} />
+          </Relative>
+        </Header>
+      </Flex>
+    </SidebarContext.Provider>
   );
 }
 
-const StyledError = styled(Error)`
+export const StyledError = styled(Error)`
   font-size: 15px;
   padding: 0 8px;
 `;

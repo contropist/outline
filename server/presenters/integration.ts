@@ -1,11 +1,10 @@
 import { Integration } from "@server/models";
 
-export default function present(integration: Integration) {
+export default function presentIntegration(integration: Integration) {
   return {
     id: integration.id,
     type: integration.type,
     userId: integration.userId,
-    teamId: integration.teamId,
     collectionId: integration.collectionId,
     authenticationId: integration.authenticationId,
     service: integration.service,

@@ -1,12 +1,22 @@
+/* eslint-disable @typescript-eslint/ban-types */
 import { Location, LocationDescriptor } from "history";
-import { TFunction } from "react-i18next";
+import { TFunction } from "i18next";
+import {
+  JSONValue,
+  CollectionPermission,
+  DocumentPermission,
+} from "@shared/types";
 import RootStore from "~/stores/RootStore";
+import { SidebarContextType } from "./components/Sidebar/components/SidebarContext";
 import Document from "./models/Document";
 import FileOperation from "./models/FileOperation";
 import Pin from "./models/Pin";
 import Star from "./models/Star";
+import User from "./models/User";
+import UserMembership from "./models/UserMembership";
 
-export type PartialWithId<T> = Partial<T> & { id: string };
+export type PartialExcept<T, K extends keyof T> = Partial<Omit<T, K>> &
+  Required<Pick<T, K>>;
 
 export type MenuItemButton = {
   type: "button";
@@ -16,7 +26,8 @@ export type MenuItemButton = {
   visible?: boolean;
   selected?: boolean;
   disabled?: boolean;
-  icon?: React.ReactElement;
+  icon?: React.ReactNode;
+  tooltip?: React.ReactChild;
 };
 
 export type MenuItemWithChildren = {
@@ -28,7 +39,7 @@ export type MenuItemWithChildren = {
   hover?: boolean;
 
   items: MenuItem[];
-  icon?: React.ReactElement;
+  icon?: React.ReactNode;
 };
 
 export type MenuSeparator = {
@@ -49,7 +60,7 @@ export type MenuInternalLink = {
   visible?: boolean;
   selected?: boolean;
   disabled?: boolean;
-  icon?: React.ReactElement;
+  icon?: React.ReactNode;
 };
 
 export type MenuExternalLink = {
@@ -60,7 +71,7 @@ export type MenuExternalLink = {
   selected?: boolean;
   disabled?: boolean;
   level?: number;
-  icon?: React.ReactElement;
+  icon?: React.ReactNode;
 };
 
 export type MenuItem =
@@ -75,8 +86,8 @@ export type ActionContext = {
   isContextMenu: boolean;
   isCommandBar: boolean;
   isButton: boolean;
-  inStarredSection?: boolean;
-  activeCollectionId: string | undefined;
+  sidebarContext?: SidebarContextType;
+  activeCollectionId?: string | undefined;
   activeDocumentId: string | undefined;
   currentUserId: string | undefined;
   currentTeamId: string | undefined;
@@ -89,17 +100,24 @@ export type ActionContext = {
 export type Action = {
   type?: undefined;
   id: string;
+  analyticsName?: string;
   name: ((context: ActionContext) => string) | string;
   section: ((context: ActionContext) => string) | string;
   shortcut?: string[];
   keywords?: string;
   dangerous?: boolean;
+  /** Higher number is higher in results, default is 0. */
+  priority?: number;
   iconInContextMenu?: boolean;
-  icon?: React.ReactElement | React.FC;
+  icon?: React.ReactNode;
   placeholder?: ((context: ActionContext) => string) | string;
   selected?: (context: ActionContext) => boolean;
   visible?: (context: ActionContext) => boolean;
-  perform?: (context: ActionContext) => void;
+  /**
+   * Perform the action – note this should generally not be called directly, use `performAction`
+   * instead. Errors will be caught and displayed to the user as a toast message.
+   */
+  perform?: (context: ActionContext) => any;
   children?: ((context: ActionContext) => Action[]) | Action[];
 };
 
@@ -110,7 +128,7 @@ export type CommandBarAction = {
   shortcut: string[];
   keywords: string;
   placeholder?: string;
-  icon?: React.ReactElement;
+  icon?: React.ReactNode;
   perform?: () => void;
   children?: string[];
   parent?: string;
@@ -120,32 +138,11 @@ export type LocationWithState = Location & {
   state: Record<string, string>;
 };
 
-export type Toast = {
-  id: string;
-  createdAt: string;
-  message: string;
-  type: "warning" | "error" | "info" | "success";
-  timeout?: number;
-  reoccurring?: number;
-  action?: {
-    text: string;
-    onClick: React.MouseEventHandler<HTMLSpanElement>;
-  };
-};
-
 export type FetchOptions = {
   prefetch?: boolean;
   revisionId?: string;
   shareId?: string;
   force?: boolean;
-};
-
-export type NavigationNode = {
-  id: string;
-  title: string;
-  url: string;
-  children: NavigationNode[];
-  isDraft?: boolean;
 };
 
 export type CollectionSort = {
@@ -171,17 +168,8 @@ export type PaginationParams = {
 export type SearchResult = {
   id: string;
   ranking: number;
-  context: string;
+  context?: string;
   document: Document;
-};
-
-export type ToastOptions = {
-  type: "warning" | "error" | "info" | "success";
-  timeout?: number;
-  action?: {
-    text: string;
-    onClick: React.MouseEventHandler<HTMLSpanElement>;
-  };
 };
 
 export type WebsocketEntityDeletedEvent = {
@@ -189,6 +177,7 @@ export type WebsocketEntityDeletedEvent = {
 };
 
 export type WebsocketEntitiesEvent = {
+  fetchIfMissing?: boolean;
   documentIds: { id: string; updatedAt?: string }[];
   collectionIds: { id: string; updatedAt?: string }[];
   groupIds: { id: string; updatedAt?: string }[];
@@ -196,21 +185,74 @@ export type WebsocketEntitiesEvent = {
   event: string;
 };
 
-export type WebsocketCollectionUserEvent = {
-  collectionId: string;
-  userId: string;
-};
-
 export type WebsocketCollectionUpdateIndexEvent = {
   collectionId: string;
   index: string;
 };
 
+export type WebsocketCommentReactionEvent = {
+  emoji: string;
+  commentId: string;
+  user: User;
+};
+
 export type WebsocketEvent =
-  | PartialWithId<Pin>
-  | PartialWithId<Star>
-  | PartialWithId<FileOperation>
-  | WebsocketCollectionUserEvent
+  | PartialExcept<Pin, "id">
+  | PartialExcept<Star, "id">
+  | PartialExcept<FileOperation, "id">
+  | PartialExcept<UserMembership, "id">
   | WebsocketCollectionUpdateIndexEvent
   | WebsocketEntityDeletedEvent
-  | WebsocketEntitiesEvent;
+  | WebsocketEntitiesEvent
+  | WebsocketCommentReactionEvent;
+
+type CursorPosition = {
+  type: {
+    client: number;
+    clock: number;
+  };
+  tname: string | null;
+  item: {
+    client: number;
+    clock: number;
+  };
+  assoc: number;
+};
+
+type Cursor = {
+  anchor: CursorPosition;
+  head: CursorPosition;
+};
+
+export type AwarenessChangeEvent = {
+  states: {
+    clientId: number;
+    user?: { id: string };
+    cursor: Cursor;
+    scrollY: number | undefined;
+  }[];
+};
+
+export const EmptySelectValue = "__empty__";
+
+export type Permission = {
+  label: string;
+  value: CollectionPermission | DocumentPermission | typeof EmptySelectValue;
+  divider?: boolean;
+};
+
+// TODO: Can we make this type driven by the @Field decorator
+export type Properties<C> = {
+  [Property in keyof C as C[Property] extends JSONValue
+    ? Property
+    : never]?: C[Property];
+};
+
+export enum CommentSortType {
+  MostRecent = "mostRecent",
+  OrderInDocument = "orderInDocument",
+}
+
+export type CommentSortOption =
+  | { type: CommentSortType.MostRecent }
+  | { type: CommentSortType.OrderInDocument; referencedCommentIds: string[] };
